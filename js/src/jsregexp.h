@@ -50,9 +50,10 @@
 #include "jsdhash.h"
 #endif
 
+JS_BEGIN_EXTERN_C
+
 struct JSRegExpStatics {
     JSString    *input;         /* input string to match (perl $_, GC root) */
-    JSString    *pendingInput;  /* pending input string to match */
     JSBool      multiline;      /* whether input contains newlines (perl $*) */
     uint16      parenCount;     /* number of valid elements in parens[] */
     uint16      moreLength;     /* number of allocated elements in moreParens */
@@ -63,9 +64,6 @@ struct JSRegExpStatics {
     JSSubString leftContext;    /* input to left of last match (perl $`) */
     JSSubString rightContext;   /* input to right of last match (perl $') */
 };
-
-void
-js_RegExpStatics_clear(JSContext *cx, JSRegExpStatics *res);
 
 /*
  * This struct holds a bitmap representation of a class from a regexp.
@@ -104,8 +102,6 @@ typedef struct RENode RENode;
 struct JSRegExp {
     jsrefcount   nrefs;         /* reference count */
     uint16       flags;         /* flags, see jsapi.h's JSREG_* defines */
-    uint16       cloneIndex;    /* index in fp->vars or funobj->slots of
-                                   cloned regexp object */
     size_t       parenCount;    /* number of parenthesized submatches */
     size_t       classCount;    /* count [...] bitmaps */
     RECharSet    *classList;    /* list of [...] bitmaps */
@@ -159,8 +155,7 @@ js_InitRegExpClass(JSContext *cx, JSObject *obj);
  * Export js_regexp_toString to the decompiler.
  */
 extern JSBool
-js_regexp_toString(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-                   jsval *rval);
+js_regexp_toString(JSContext *cx, JSObject *obj, jsval *vp);
 
 /*
  * Create, serialize/deserialize, or clone a RegExp object.
@@ -183,5 +178,7 @@ js_GetLastIndex(JSContext *cx, JSObject *obj, jsdouble *lastIndex);
 
 extern JSBool
 js_SetLastIndex(JSContext *cx, JSObject *obj, jsdouble lastIndex);
+
+JS_END_EXTERN_C
 
 #endif /* jsregexp_h___ */

@@ -46,29 +46,24 @@
  * but floating point literals, results that overflow 31 bits, and division and
  * modulus operands and results require a 64-bit IEEE double.  These are GC'ed
  * and pointed to by 32-bit jsvals on the stack and in object properties.
- *
- * When a JS number is treated as an object (followed by . or []), the runtime
- * wraps it with a JSObject whose valueOf method returns the unwrapped number.
  */
 
 JS_BEGIN_EXTERN_C
 
 /*
- * Stefan Hanske <sh990154@mail.uni-greifswald.de> reports:
- *  ARM is a little endian architecture but 64 bit double words are stored
- * differently: the 32 bit words are in little endian byte order, the two words
- * are stored in big endian`s way.
+ * The ARM architecture supports two floating point models: VFP and FPA. When
+ * targetting FPA, doubles are mixed-endian on little endian ARMs (meaning that
+ * the high and low words are in big endian order).
  */
-
 #if defined(__arm) || defined(__arm32__) || defined(__arm26__) || defined(__arm__)
-#ifndef __QNXNTO__
-#define CPU_IS_ARM
+#if !defined(__VFP_FP__)
+#define FPU_IS_ARM_FPA
 #endif
 #endif
 
 typedef union jsdpun {
     struct {
-#if defined(IS_LITTLE_ENDIAN) && !defined(CPU_IS_ARM)
+#if defined(IS_LITTLE_ENDIAN) && !defined(FPU_IS_ARM_FPA)
         uint32 lo, hi;
 #else
         uint32 hi, lo;
@@ -97,7 +92,7 @@ typedef union jsdpun {
  * so this code should work.
  */
 
-#if defined(IS_LITTLE_ENDIAN) && !defined(CPU_IS_ARM)
+#if defined(IS_LITTLE_ENDIAN) && !defined(FPU_IS_ARM_FPA)
 #define JSDOUBLE_HI32(x)        (((uint32 *)&(x))[1])
 #define JSDOUBLE_LO32(x)        (((uint32 *)&(x))[0])
 #else
@@ -183,10 +178,6 @@ js_NewDoubleValue(JSContext *cx, jsdouble d, jsval *rval);
 extern JSBool
 js_NewNumberValue(JSContext *cx, jsdouble d, jsval *rval);
 
-/* Construct a Number instance that wraps around d. */
-extern JSObject *
-js_NumberToObject(JSContext *cx, jsdouble d);
-
 /* Convert a number to a GC'ed string. */
 extern JSString *
 js_NumberToString(JSContext *cx, jsdouble d);
@@ -251,7 +242,8 @@ js_DoubleToInteger(jsdouble d);
  * Return false if out of memory.
  */
 extern JSBool
-js_strtod(JSContext *cx, const jschar *s, const jschar **ep, jsdouble *dp);
+js_strtod(JSContext *cx, const jschar *s, const jschar *send,
+          const jschar **ep, jsdouble *dp);
 
 /*
  * Similar to strtol except that it handles integers of arbitrary size.
@@ -263,7 +255,8 @@ js_strtod(JSContext *cx, const jschar *s, const jschar **ep, jsdouble *dp);
  * Return false if out of memory.
  */
 extern JSBool
-js_strtointeger(JSContext *cx, const jschar *s, const jschar **ep, jsint radix, jsdouble *dp);
+js_strtointeger(JSContext *cx, const jschar *s, const jschar *send,
+                const jschar **ep, jsint radix, jsdouble *dp);
 
 JS_END_EXTERN_C
 

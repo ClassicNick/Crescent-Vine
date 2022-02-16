@@ -191,34 +191,29 @@ namespace_finalize(JSContext *cx, JSObject *obj)
 }
 
 static void
-namespace_mark_vector(JSContext *cx, JSXMLNamespace **vec, uint32 len)
+namespace_trace_vector(JSTracer *trc, JSXMLNamespace **vec,
+                       uint32 len)
 {
     uint32 i;
     JSXMLNamespace *ns;
 
     for (i = 0; i < len; i++) {
         ns = vec[i];
-        {
-#ifdef GC_MARK_DEBUG
-            char buf[100];
-
-            JS_snprintf(buf, sizeof buf, "%s=%s",
-                        ns->prefix ? JS_GetStringBytes(ns->prefix) : "",
-                        JS_GetStringBytes(ns->uri));
-#endif
-            GC_MARK(cx, ns, buf);
+        if (ns) {
+            JS_SET_TRACING_INDEX(trc, "namespace_vector", i);
+            JS_CallTracer(trc, ns, JSTRACE_NAMESPACE);
         }
     }
 }
 
-static uint32
-namespace_mark(JSContext *cx, JSObject *obj, void *arg)
+static void
+namespace_trace(JSTracer *trc, JSObject *obj)
 {
     JSXMLNamespace *ns;
 
-    ns = (JSXMLNamespace *) JS_GetPrivate(cx, obj);
-    GC_MARK(cx, ns, "private");
-    return 0;
+    ns = (JSXMLNamespace *) JS_GetPrivate(trc->context, obj);
+    if (ns)
+        JS_CALL_TRACER(trc, ns, JSTRACE_NAMESPACE, "private");
 }
 
 static JSBool
@@ -242,11 +237,11 @@ namespace_equality(JSContext *cx, JSObject *obj, jsval v, JSBool *bp)
 JS_FRIEND_DATA(JSExtendedClass) js_NamespaceClass = {
   { "Namespace",
     JSCLASS_HAS_PRIVATE | JSCLASS_CONSTRUCT_PROTOTYPE | JSCLASS_IS_EXTENDED |
-    JSCLASS_HAS_CACHED_PROTO(JSProto_Namespace),
+    JSCLASS_MARK_IS_TRACE | JSCLASS_HAS_CACHED_PROTO(JSProto_Namespace),
     JS_PropertyStub,   JS_PropertyStub,   namespace_getProperty, NULL,
     JS_EnumerateStub,  JS_ResolveStub,    JS_ConvertStub,    namespace_finalize,
     NULL,              NULL,              NULL,              NULL,
-    NULL,              NULL,              namespace_mark,    NULL },
+    NULL,              NULL,            JS_CLASS_TRACE(namespace_trace), NULL },
     namespace_equality,NULL,              NULL,              NULL,
     NULL,              NULL,              NULL,              NULL
 };
@@ -261,23 +256,25 @@ static JSPropertySpec namespace_props[] = {
 };
 
 static JSBool
-namespace_toString(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-                   jsval *rval)
+namespace_toString(JSContext *cx, uintN argc, jsval *vp)
 {
     JSXMLNamespace *ns;
 
     ns = (JSXMLNamespace *)
-         JS_GetInstancePrivate(cx, obj, &js_NamespaceClass.base, argv);
+         JS_GetInstancePrivate(cx,
+                               JS_THIS_OBJECT(cx, vp),
+                               &js_NamespaceClass.base,
+                               vp + 2);
     if (!ns)
         return JS_FALSE;
 
-    *rval = STRING_TO_JSVAL(ns->uri);
+    *vp = STRING_TO_JSVAL(ns->uri);
     return JS_TRUE;
 }
 
 static JSFunctionSpec namespace_methods[] = {
-    {js_toString_str,  namespace_toString,        0,0,0},
-    {0,0,0,0,0}
+    JS_FN(js_toString_str,  namespace_toString,        0,0,0),
+    JS_FS_END
 };
 
 JSXMLNamespace *
@@ -300,11 +297,14 @@ js_NewXMLNamespace(JSContext *cx, JSString *prefix, JSString *uri,
 }
 
 void
-js_MarkXMLNamespace(JSContext *cx, JSXMLNamespace *ns)
+js_TraceXMLNamespace(JSTracer *trc, JSXMLNamespace *ns)
 {
-    GC_MARK(cx, ns->object, "object");
-    GC_MARK(cx, ns->prefix, "prefix");
-    GC_MARK(cx, ns->uri, "uri");
+    if (ns->object)
+        JS_CALL_OBJECT_TRACER(trc, ns->object, "object");
+    if (ns->prefix)
+        JS_CALL_STRING_TRACER(trc, ns->prefix, "prefix");
+    if (ns->uri)
+        JS_CALL_STRING_TRACER(trc, ns->uri, "uri");
 }
 
 void
@@ -318,17 +318,11 @@ js_NewXMLNamespaceObject(JSContext *cx, JSString *prefix, JSString *uri,
                          JSBool declared)
 {
     JSXMLNamespace *ns;
-    JSTempValueRooter tvr;
-    JSObject *obj;
 
     ns = js_NewXMLNamespace(cx, prefix, uri, declared);
     if (!ns)
         return NULL;
-
-    JS_PUSH_TEMP_ROOT_NAMESPACE(cx, ns, &tvr);
-    obj = js_GetXMLNamespaceObject(cx, ns);
-    JS_POP_TEMP_ROOT(cx, &tvr);
-    return obj;
+    return js_GetXMLNamespaceObject(cx, ns);
 }
 
 JSObject *
@@ -410,14 +404,14 @@ anyname_finalize(JSContext* cx, JSObject* obj)
     qname_finalize(cx, obj);
 }
 
-static uint32
-qname_mark(JSContext *cx, JSObject *obj, void *arg)
+static void
+qname_trace(JSTracer *trc, JSObject *obj)
 {
     JSXMLQName *qn;
 
-    qn = (JSXMLQName *) JS_GetPrivate(cx, obj);
-    GC_MARK(cx, qn, "private");
-    return 0;
+    qn = (JSXMLQName *) JS_GetPrivate(trc->context, obj);
+    if (qn)
+        JS_CALL_TRACER(trc, qn, JSTRACE_QNAME, "private");
 }
 
 static JSBool
@@ -451,11 +445,11 @@ qname_equality(JSContext *cx, JSObject *obj, jsval v, JSBool *bp)
 JS_FRIEND_DATA(JSExtendedClass) js_QNameClass = {
   { "QName",
     JSCLASS_HAS_PRIVATE | JSCLASS_CONSTRUCT_PROTOTYPE | JSCLASS_IS_EXTENDED |
-    JSCLASS_HAS_CACHED_PROTO(JSProto_QName),
+    JSCLASS_MARK_IS_TRACE | JSCLASS_HAS_CACHED_PROTO(JSProto_QName),
     JS_PropertyStub,   JS_PropertyStub,   qname_getProperty, NULL,
     JS_EnumerateStub,  JS_ResolveStub,    JS_ConvertStub,    qname_finalize,
     NULL,              NULL,              NULL,              NULL,
-    NULL,              NULL,              qname_mark,        NULL },
+    NULL,              NULL,              JS_CLASS_TRACE(qname_trace), NULL },
     qname_equality,    NULL,              NULL,              NULL,
     NULL,              NULL,              NULL,              NULL
 };
@@ -469,21 +463,21 @@ JS_FRIEND_DATA(JSExtendedClass) js_QNameClass = {
 JS_FRIEND_DATA(JSClass) js_AttributeNameClass = {
     js_AttributeName_str,
     JSCLASS_HAS_PRIVATE | JSCLASS_CONSTRUCT_PROTOTYPE |
-    JSCLASS_HAS_CACHED_PROTO(JSProto_AttributeName),
+    JSCLASS_MARK_IS_TRACE | JSCLASS_HAS_CACHED_PROTO(JSProto_AttributeName),
     JS_PropertyStub,   JS_PropertyStub,   JS_PropertyStub,   JS_PropertyStub,
     JS_EnumerateStub,  JS_ResolveStub,    JS_ConvertStub,    qname_finalize,
     NULL,              NULL,              NULL,              NULL,
-    NULL,              NULL,              qname_mark,        NULL
+    NULL,              NULL,              JS_CLASS_TRACE(qname_trace), NULL
 };
 
 JS_FRIEND_DATA(JSClass) js_AnyNameClass = {
     js_AnyName_str,
     JSCLASS_HAS_PRIVATE | JSCLASS_CONSTRUCT_PROTOTYPE |
-    JSCLASS_HAS_CACHED_PROTO(JSProto_AnyName),
+    JSCLASS_MARK_IS_TRACE | JSCLASS_HAS_CACHED_PROTO(JSProto_AnyName),
     JS_PropertyStub,   JS_PropertyStub,   JS_PropertyStub,   JS_PropertyStub,
     JS_EnumerateStub,  JS_ResolveStub,    JS_ConvertStub,    anyname_finalize,
     NULL,              NULL,              NULL,              NULL,
-    NULL,              NULL,              qname_mark,        NULL
+    NULL,              NULL,              JS_CLASS_TRACE(qname_trace), NULL
 };
 
 #define QNAME_ATTRS                                                           \
@@ -496,21 +490,22 @@ static JSPropertySpec qname_props[] = {
 };
 
 static JSBool
-qname_toString(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-               jsval *rval)
+qname_toString(JSContext *cx, uintN argc, jsval *vp)
 {
+    JSObject *obj;
     JSClass *clasp;
     JSXMLQName *qn;
     JSString *str, *qualstr;
     size_t length;
     jschar *chars;
 
+    obj = JS_THIS_OBJECT(cx, vp);
     clasp = OBJ_GET_CLASS(cx, obj);
     if (clasp == &js_AttributeNameClass || clasp == &js_AnyNameClass) {
         qn = (JSXMLQName *) JS_GetPrivate(cx, obj);
     } else {
         qn = (JSXMLQName *)
-             JS_GetInstancePrivate(cx, obj, &js_QNameClass.base, argv);
+             JS_GetInstancePrivate(cx, obj, &js_QNameClass.base, vp + 2);
         if (!qn)
             return JS_FALSE;
     }
@@ -539,20 +534,20 @@ qname_toString(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
         *chars = '@';
         js_strncpy(chars + 1, JSSTRING_CHARS(str), length);
         chars[++length] = 0;
-        str = js_NewString(cx, chars, length, 0);
+        str = js_NewString(cx, chars, length);
         if (!str) {
             JS_free(cx, chars);
             return JS_FALSE;
         }
     }
 
-    *rval = STRING_TO_JSVAL(str);
+    *vp = STRING_TO_JSVAL(str);
     return JS_TRUE;
 }
 
 static JSFunctionSpec qname_methods[] = {
-    {js_toString_str,  qname_toString,    0,0,0},
-    {0,0,0,0,0}
+    JS_FN(js_toString_str,  qname_toString,    0,0,0),
+    JS_FS_END
 };
 
 JSXMLQName *
@@ -574,12 +569,16 @@ js_NewXMLQName(JSContext *cx, JSString *uri, JSString *prefix,
 }
 
 void
-js_MarkXMLQName(JSContext *cx, JSXMLQName *qn)
+js_TraceXMLQName(JSTracer *trc, JSXMLQName *qn)
 {
-    GC_MARK(cx, qn->object, "object");
-    GC_MARK(cx, qn->uri, "uri");
-    GC_MARK(cx, qn->prefix, "prefix");
-    GC_MARK(cx, qn->localName, "localName");
+    if (qn->object)
+        JS_CALL_OBJECT_TRACER(trc, qn->object, "object");
+    if (qn->uri)
+        JS_CALL_STRING_TRACER(trc, qn->uri, "uri");
+    if (qn->prefix)
+        JS_CALL_STRING_TRACER(trc, qn->prefix, "prefix");
+    if (qn->localName)
+        JS_CALL_STRING_TRACER(trc, qn->localName, "localName");
 }
 
 void
@@ -593,16 +592,11 @@ js_NewXMLQNameObject(JSContext *cx, JSString *uri, JSString *prefix,
                      JSString *localName)
 {
     JSXMLQName *qn;
-    JSTempValueRooter tvr;
-    JSObject *obj;
 
     qn = js_NewXMLQName(cx, uri, prefix, localName);
     if (!qn)
         return NULL;
-    JS_PUSH_TEMP_ROOT_QNAME(cx, qn, &tvr);
-    obj = js_GetXMLQNameObject(cx, qn);
-    JS_POP_TEMP_ROOT(cx, &tvr);
-    return obj;
+    return js_GetXMLQNameObject(cx, qn);
 }
 
 JSObject *
@@ -725,8 +719,7 @@ js_IsXMLName(JSContext *cx, jsval v)
 }
 
 static JSBool
-NamespaceHelper(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-                jsval *rval)
+Namespace(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
 {
     jsval urival, prefixval;
     JSObject *uriobj;
@@ -748,7 +741,7 @@ NamespaceHelper(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
     else uriobj = NULL;
 #endif
 
-    if (!obj) {
+    if (!(cx->fp->flags & JSFRAME_CONSTRUCTING)) {
         /* Namespace called as function. */
         if (argc == 1 && isNamespace) {
             /* Namespace called with one Namespace argument is identity. */
@@ -835,32 +828,22 @@ NamespaceHelper(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
 }
 
 static JSBool
-Namespace(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
-{
-    return NamespaceHelper(cx,
-                           (cx->fp->flags & JSFRAME_CONSTRUCTING) ? obj : NULL,
-                           argc, argv, rval);
-}
-
-static JSBool
-QNameHelper(JSContext *cx, JSObject *obj, JSClass *clasp, uintN argc,
-            jsval *argv, jsval *rval)
+QName(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
 {
     jsval nameval, nsval;
     JSBool isQName, isNamespace;
     JSXMLQName *qn;
     JSString *uri, *prefix, *name;
     JSObject *nsobj;
+    JSClass *clasp;
     JSXMLNamespace *ns;
 
-    JS_ASSERT(clasp == &js_QNameClass.base ||
-              clasp == &js_AttributeNameClass);
     nameval = argv[argc > 1];
     isQName =
         !JSVAL_IS_PRIMITIVE(nameval) &&
         OBJ_GET_CLASS(cx, JSVAL_TO_OBJECT(nameval)) == &js_QNameClass.base;
 
-    if (!obj) {
+    if (!(cx->fp->flags & JSFRAME_CONSTRUCTING)) {
         /* QName called as function. */
         if (argc == 1 && isQName) {
             /* QName called with one QName argument is identity. */
@@ -869,10 +852,13 @@ QNameHelper(JSContext *cx, JSObject *obj, JSClass *clasp, uintN argc,
         }
 
         /*
-         * Create and return a new QName or AttributeName object exactly as if
-         * constructed.
+         * Create and return a new QName object exactly as if constructed.
+         * Use the constructor's clasp so we can be shared by AttributeName
+         * (see below after this function).
          */
-        obj = js_NewObject(cx, clasp, NULL, NULL);
+        obj = js_NewObject(cx,
+                           JS_ValueToFunction(cx, argv[-2])->clasp,
+                           NULL, NULL);
         if (!obj)
             return JS_FALSE;
         *rval = OBJECT_TO_JSVAL(obj);
@@ -967,18 +953,14 @@ out:
 }
 
 static JSBool
-QName(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
-{
-    return QNameHelper(cx, (cx->fp->flags & JSFRAME_CONSTRUCTING) ? obj : NULL,
-                       &js_QNameClass.base, argc, argv, rval);
-}
-
-static JSBool
 AttributeName(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
               jsval *rval)
 {
-    return QNameHelper(cx, (cx->fp->flags & JSFRAME_CONSTRUCTING) ? obj : NULL,
-                       &js_AttributeNameClass, argc, argv, rval);
+    /*
+     * Since js_AttributeNameClass was initialized, obj will have that as its
+     * class, not js_QNameClass.
+     */
+    return QName(cx, obj, argc, argv, rval);
 }
 
 /*
@@ -1061,15 +1043,21 @@ XMLArrayCursorItem(JSXMLArrayCursor *cursor)
 }
 
 static void
-XMLArrayCursorMark(JSContext *cx, JSXMLArrayCursor *cursor)
+XMLArrayCursorTrace(JSTracer *trc, JSXMLArrayCursor *cursor)
 {
-    while (cursor) {
-        GC_MARK(cx, cursor->root, "cursor->root");
-        cursor = cursor->next;
+    void *root;
+#ifdef DEBUG
+    size_t index = 0;
+#endif
+
+    for (; cursor; cursor = cursor->next) {
+        root = cursor->root;
+        JS_SET_TRACING_INDEX(trc, "cursor_root", index++);
+        js_CallValueTracerIfGCThing(trc, (jsval)root);
     }
 }
 
-/* NB: called with null cx from the GC, via xml_mark => XMLArrayTrim. */
+/* NB: called with null cx from the GC, via xml_trace => XMLArrayTrim. */
 static JSBool
 XMLArraySetCapacity(JSContext *cx, JSXMLArray *array, uint32 capacity)
 {
@@ -1262,7 +1250,7 @@ XMLArrayTruncate(JSContext *cx, JSXMLArray *array, uint32 length)
             free(array->vector);
         vector = NULL;
     } else {
-        vector = realloc(array->vector, length * sizeof(void *));
+        vector = (void **) realloc(array->vector, length * sizeof(void *));
         if (!vector)
             return;
     }
@@ -1414,8 +1402,7 @@ ParseNodeToQName(JSContext *cx, JSParseNode *pn, JSXMLArray *inScopeNSes,
 
     JS_ASSERT(pn->pn_arity == PN_NULLARY);
     str = ATOM_TO_STRING(pn->pn_atom);
-    length = JSSTRING_LENGTH(str);
-    start = JSSTRING_CHARS(str);
+    JSSTRING_CHARS_AND_LENGTH(str, start, length);
     JS_ASSERT(length != 0 && *start != '@');
     JS_ASSERT(length != 1 || *start != '*');
 
@@ -1424,7 +1411,7 @@ ParseNodeToQName(JSContext *cx, JSParseNode *pn, JSXMLArray *inScopeNSes,
     colon = js_strchr_limit(start, ':', limit);
     if (colon) {
         offset = PTRDIFF(colon, start, jschar);
-        prefix = js_NewDependentString(cx, str, 0, offset, 0);
+        prefix = js_NewDependentString(cx, str, 0, offset);
         if (!prefix)
             return NULL;
 
@@ -1462,7 +1449,7 @@ ParseNodeToQName(JSContext *cx, JSParseNode *pn, JSXMLArray *inScopeNSes,
             return NULL;
         }
 
-        localName = js_NewStringCopyN(cx, colon + 1, length - (offset + 1), 0);
+        localName = js_NewStringCopyN(cx, colon + 1, length - (offset + 1));
         if (!localName)
             return NULL;
     } else {
@@ -1501,8 +1488,8 @@ ChompXMLWhitespace(JSContext *cx, JSString *str)
     const jschar *cp, *start, *end;
     jschar c;
 
-    length = JSSTRING_LENGTH(str);
-    for (cp = start = JSSTRING_CHARS(str), end = cp + length; cp < end; cp++) {
+    JSSTRING_CHARS_AND_LENGTH(str, start, length);
+    for (cp = start, end = cp + length; cp < end; cp++) {
         c = *cp;
         if (!JS_ISXMLSPACE(c))
             break;
@@ -1517,7 +1504,7 @@ ChompXMLWhitespace(JSContext *cx, JSString *str)
     if (newlength == length)
         return str;
     offset = PTRDIFF(cp, start, jschar);
-    return js_NewDependentString(cx, str, offset, newlength, 0);
+    return js_NewDependentString(cx, str, offset, newlength);
 }
 
 static JSXML *
@@ -1688,8 +1675,7 @@ ParseNodeToXML(JSContext *cx, JSParseNode *pn, JSXMLArray *inScopeNSes,
             if (pn2->pn_type != TOK_XMLATTR)
                 goto syntax;
 
-            length = JSSTRING_LENGTH(str);
-            chars = JSSTRING_CHARS(str);
+            JSSTRING_CHARS_AND_LENGTH(str, chars, length);
             if (length >= 5 &&
                 IS_XMLNS_CHARS(chars) &&
                 (length == 5 || chars[5] == ':')) {
@@ -1700,7 +1686,7 @@ ParseNodeToXML(JSContext *cx, JSParseNode *pn, JSXMLArray *inScopeNSes,
                     /* 10.3.2.1. Step 6(h)(i)(1)(a). */
                     prefix = cx->runtime->emptyString;
                 } else {
-                    prefix = js_NewStringCopyN(cx, chars + 6, length - 6, 0);
+                    prefix = js_NewStringCopyN(cx, chars + 6, length - 6);
                     if (!prefix)
                         goto fail;
                 }
@@ -1966,22 +1952,21 @@ ParseXMLSource(JSContext *cx, JSString *src)
 {
     jsval nsval;
     JSXMLNamespace *ns;
-    JSString *uri;
     size_t urilen, srclen, length, offset, dstlen;
     jschar *chars;
     const jschar *srcp, *endp;
-    void *mark;
-    JSTokenStream *ts;
+    JSXML *xml;
+    JSParseContext pc;
+    const char *filename;
     uintN lineno;
     JSStackFrame *fp;
     JSOp op;
     JSParseNode *pn;
-    JSXML *xml;
     JSXMLArray nsarray;
     uintN flags;
 
-    static const char prefix[] = "<parent xmlns=\"";
-    static const char middle[] = "\">";
+    static const char prefix[] = "<parent xmlns='";
+    static const char middle[] = "'>";
     static const char suffix[] = "</parent>";
 
 #define constrlen(constr)   (sizeof(constr) - 1)
@@ -1989,9 +1974,8 @@ ParseXMLSource(JSContext *cx, JSString *src)
     if (!js_GetDefaultXMLNamespace(cx, &nsval))
         return NULL;
     ns = (JSXMLNamespace *) JS_GetPrivate(cx, JSVAL_TO_OBJECT(nsval));
-    uri = js_EscapeAttributeValue(cx, ns->uri, JS_FALSE);
 
-    urilen = JSSTRING_LENGTH(uri);
+    urilen = JSSTRING_LENGTH(ns->uri);
     srclen = JSSTRING_LENGTH(src);
     length = constrlen(prefix) + urilen + constrlen(middle) + srclen +
              constrlen(suffix);
@@ -2003,7 +1987,7 @@ ParseXMLSource(JSContext *cx, JSString *src)
     dstlen = length;
     js_InflateStringToBuffer(cx, prefix, constrlen(prefix), chars, &dstlen);
     offset = dstlen;
-    js_strncpy(chars + offset, JSSTRING_CHARS(uri), urilen);
+    js_strncpy(chars + offset, JSSTRING_CHARS(ns->uri), urilen);
     offset += urilen;
     dstlen = length - offset + 1;
     js_InflateStringToBuffer(cx, middle, constrlen(middle), chars + offset,
@@ -2017,36 +2001,35 @@ ParseXMLSource(JSContext *cx, JSString *src)
                              &dstlen);
     chars [offset + dstlen] = 0;
 
-    mark = JS_ARENA_MARK(&cx->tempPool);
-    ts = js_NewBufferTokenStream(cx, chars, length);
-    if (!ts)
-        return NULL;
+    xml = NULL;
     for (fp = cx->fp; fp && !fp->pc; fp = fp->down)
-        continue;
+        JS_ASSERT(!fp->script);
+    filename = NULL;
+    lineno = 1;
     if (fp) {
         op = (JSOp) *fp->pc;
         if (op == JSOP_TOXML || op == JSOP_TOXMLLIST) {
-            ts->filename = fp->script->filename;
+            filename = fp->script->filename;
             lineno = js_PCToLineNumber(cx, fp->script, fp->pc);
-            for (endp = srcp + srclen; srcp < endp; srcp++)
+            for (endp = srcp + srclen; srcp < endp; srcp++) {
                 if (*srcp == '\n')
                     --lineno;
-            ts->lineno = lineno;
+            }
         }
     }
 
-    JS_KEEP_ATOMS(cx->runtime);
-    pn = js_ParseXMLTokenStream(cx, cx->fp->scopeChain, ts, JS_FALSE);
-    xml = NULL;
+    if (!js_InitParseContext(cx, &pc, chars, length, NULL, filename, lineno))
+        goto out;
+    pn = js_ParseXMLText(cx, cx->fp->scopeChain, &pc, JS_FALSE);
     if (pn && XMLArrayInit(cx, &nsarray, 1)) {
         if (GetXMLSettingFlags(cx, &flags))
             xml = ParseNodeToXML(cx, pn, &nsarray, flags);
 
         XMLArrayFinish(cx, &nsarray);
     }
-    JS_UNKEEP_ATOMS(cx->runtime);
+    js_FinishParseContext(cx, &pc);
 
-    JS_ARENA_RELEASE(&cx->tempPool, mark);
+out:
     JS_free(cx, chars);
     return xml;
 
@@ -2163,12 +2146,8 @@ ToXML(JSContext *cx, jsval v)
     return obj;
 
 bad:
-    str = js_DecompileValueGenerator(cx, JSDVG_IGNORE_STACK, v, NULL);
-    if (str) {
-        JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL,
-                             JSMSG_BAD_XML_CONVERSION,
-                             JS_GetStringBytes(str));
-    }
+    js_ReportValueError(cx, JSMSG_BAD_XML_CONVERSION,
+                        JSDVG_IGNORE_STACK, v, NULL);
     return NULL;
 }
 
@@ -2249,12 +2228,8 @@ ToXMLList(JSContext *cx, jsval v)
     return listobj;
 
 bad:
-    str = js_DecompileValueGenerator(cx, JSDVG_IGNORE_STACK, v, NULL);
-    if (str) {
-        JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL,
-                             JSMSG_BAD_XMLLIST_CONVERSION,
-                             JS_GetStringBytes(str));
-    }
+    js_ReportValueError(cx, JSMSG_BAD_XMLLIST_CONVERSION,
+                        JSDVG_IGNORE_STACK, v, NULL);
     return NULL;
 }
 
@@ -2307,7 +2282,7 @@ MakeXMLSpecialString(JSContext *cx, JSStringBuffer *sb,
     js_strncpy(bp, suffix, suffixlength);
     bp[suffixlength] = 0;
 
-    str = js_NewString(cx, base, newlength, 0);
+    str = js_NewString(cx, base, newlength);
     if (!str)
         free(base);
     return str;
@@ -2356,14 +2331,17 @@ MakeXMLPIString(JSContext *cx, JSStringBuffer *sb, JSString *name,
 static void
 AppendAttributeValue(JSContext *cx, JSStringBuffer *sb, JSString *valstr)
 {
-    js_AppendChar(sb, '=');
-    valstr = js_EscapeAttributeValue(cx, valstr, JS_TRUE);
+    js_AppendCString(sb, "=\"");
+    valstr = js_EscapeAttributeValue(cx, valstr);
     if (!valstr) {
-        free(sb->base);
-        sb->base = STRING_BUFFER_ERROR_BASE;
+        if (STRING_BUFFER_OK(sb)) {
+            free(sb->base);
+            sb->base = STRING_BUFFER_ERROR_BASE;
+        }
         return;
     }
     js_AppendJSString(sb, valstr);
+    js_AppendChar(sb, '"');
 }
 
 /*
@@ -2379,8 +2357,9 @@ EscapeElementValue(JSContext *cx, JSStringBuffer *sb, JSString *str)
     const jschar *cp, *start, *end;
     jschar c;
 
-    length = newlength = JSSTRING_LENGTH(str);
-    for (cp = start = JSSTRING_CHARS(str), end = cp + length; cp < end; cp++) {
+    JSSTRING_CHARS_AND_LENGTH(str, start, length);
+    newlength = length;
+    for (cp = start, end = cp + length; cp < end; cp++) {
         c = *cp;
         if (c == '<' || c == '>')
             newlength += 3;
@@ -2414,7 +2393,7 @@ EscapeElementValue(JSContext *cx, JSStringBuffer *sb, JSString *str)
                 js_AppendChar(sb, c);
         }
         JS_ASSERT(STRING_BUFFER_OK(sb));
-        str = js_NewString(cx, sb->base, STRING_BUFFER_OFFSET(sb), 0);
+        str = js_NewString(cx, sb->base, STRING_BUFFER_OFFSET(sb));
         if (!str)
             js_FinishStringBuffer(sb);
     }
@@ -2426,16 +2405,15 @@ EscapeElementValue(JSContext *cx, JSStringBuffer *sb, JSString *str)
  * This function takes ownership of sb->base, if sb is non-null, in all cases.
  */
 static JSString *
-EscapeAttributeValue(JSContext *cx, JSStringBuffer *sb, JSString *str,
-                     JSBool quote)
+EscapeAttributeValue(JSContext *cx, JSStringBuffer *sb, JSString *str)
 {
     size_t length, newlength;
     const jschar *cp, *start, *end;
     jschar c;
 
-    length = JSSTRING_LENGTH(str);
-    newlength = length + (quote ? 2 : 0);
-    for (cp = start = JSSTRING_CHARS(str), end = cp + length; cp < end; cp++) {
+    JSSTRING_CHARS_AND_LENGTH(str, start, length);
+    newlength = length;
+    for (cp = start, end = cp + length; cp < end; cp++) {
         c = *cp;
         if (c == '"')
             newlength += 5;
@@ -2459,8 +2437,6 @@ EscapeAttributeValue(JSContext *cx, JSStringBuffer *sb, JSString *str,
             JS_ReportOutOfMemory(cx);
             return NULL;
         }
-        if (quote)
-            js_AppendChar(sb, '"');
         for (cp = start; cp < end; cp++) {
             c = *cp;
             if (c == '"')
@@ -2478,10 +2454,8 @@ EscapeAttributeValue(JSContext *cx, JSStringBuffer *sb, JSString *str,
             else
                 js_AppendChar(sb, c);
         }
-        if (quote)
-            js_AppendChar(sb, '"');
         JS_ASSERT(STRING_BUFFER_OK(sb));
-        str = js_NewString(cx, sb->base, STRING_BUFFER_OFFSET(sb), 0);
+        str = js_NewString(cx, sb->base, STRING_BUFFER_OFFSET(sb));
         if (!str)
             js_FinishStringBuffer(sb);
     }
@@ -2504,7 +2478,7 @@ GetNamespace(JSContext *cx, JSXMLQName *qn, const JSXMLArray *inScopeNSes)
                              qn->prefix
                              ? js_ValueToPrintableString(cx,
                                    STRING_TO_JSVAL(qn->prefix))
-                             : js_type_strs[JSTYPE_VOID]);
+                             : js_undefined_str);
         return NULL;
     }
 
@@ -2600,8 +2574,8 @@ GeneratePrefix(JSContext *cx, JSString *uri, JSXMLArray *decls)
      * ".../there.is.only.xul", "xbl" given ".../xbl", and "xbl2" given any
      * likely URI of the form ".../xbl2/2005".
      */
-    start = JSSTRING_CHARS(uri);
-    cp = end = start + JSSTRING_LENGTH(uri);
+    JSSTRING_CHARS_AND_END(uri, start, end);
+    cp = end;
     while (--cp > start) {
         if (*cp == '.' || *cp == '/' || *cp == ':') {
             ++cp;
@@ -2623,7 +2597,7 @@ GeneratePrefix(JSContext *cx, JSString *uri, JSXMLArray *decls)
     bp = (jschar *) cp;
     newlength = length;
     if (STARTS_WITH_XML(cp, length) || !IsXMLName(cp, length)) {
-        newlength = length + 2 + (size_t) log10(decls->length);
+        newlength = length + 2 + (size_t) log10((double) decls->length);
         bp = (jschar *)
              JS_malloc(cx, (newlength + 1) * sizeof(jschar));
         if (!bp)
@@ -2648,7 +2622,7 @@ GeneratePrefix(JSContext *cx, JSString *uri, JSXMLArray *decls)
                 !memcmp(JSSTRING_CHARS(ns->prefix), bp,
                         newlength * sizeof(jschar))) {
                 if (bp == cp) {
-                    newlength = length + 2 + (size_t) log10(n);
+                    newlength = length + 2 + (size_t) log10((double) n);
                     bp = (jschar *)
                          JS_malloc(cx, (newlength + 1) * sizeof(jschar));
                     if (!bp)
@@ -2658,7 +2632,7 @@ GeneratePrefix(JSContext *cx, JSString *uri, JSXMLArray *decls)
 
                 ++serial;
                 JS_ASSERT(serial <= n);
-                dp = bp + length + 2 + (size_t) log10(serial);
+                dp = bp + length + 2 + (size_t) log10((double) serial);
                 *dp = 0;
                 for (m = serial; m != 0; m /= 10)
                     *--dp = (jschar)('0' + m % 10);
@@ -2673,9 +2647,9 @@ GeneratePrefix(JSContext *cx, JSString *uri, JSXMLArray *decls)
 
     if (bp == cp) {
         offset = PTRDIFF(cp, start, jschar);
-        prefix = js_NewDependentString(cx, uri, offset, length, 0);
+        prefix = js_NewDependentString(cx, uri, offset, length);
     } else {
-        prefix = js_NewString(cx, bp, newlength, 0);
+        prefix = js_NewString(cx, bp, newlength);
         if (!prefix)
             JS_free(cx, bp);
     }
@@ -2694,8 +2668,6 @@ namespace_match(const void *a, const void *b)
 }
 
 /* ECMA-357 10.2.1 and 10.2.2 */
-#define TO_SOURCE_FLAG 0x80000000
-
 static JSString *
 XMLToXMLString(JSContext *cx, JSXML *xml, const JSXMLArray *ancestorNSes,
                uintN indentLevel)
@@ -2704,17 +2676,24 @@ XMLToXMLString(JSContext *cx, JSXML *xml, const JSXMLArray *ancestorNSes,
     JSStringBuffer sb;
     JSString *str, *prefix, *kidstr;
     JSXMLArrayCursor cursor;
-    uint32 i, n, nextIndentLevel;
+    uint32 i, n;
     JSXMLArray empty, decls, ancdecls;
     JSXMLNamespace *ns, *ns2;
+    uintN nextIndentLevel;
     JSXML *attr, *kid;
 
     if (!GetBooleanXMLSetting(cx, js_prettyPrinting_str, &pretty))
         return NULL;
 
     js_InitStringBuffer(&sb);
-    if (pretty)
-        js_RepeatChar(&sb, ' ', indentLevel & ~TO_SOURCE_FLAG);
+    if (pretty) {
+        js_RepeatChar(&sb, ' ', indentLevel);
+
+        if (!STRING_BUFFER_OK(&sb)) {
+            JS_ReportOutOfMemory(cx);
+            return NULL;
+        }
+    }
     str = NULL;
 
     switch (xml->xml_class) {
@@ -2731,8 +2710,7 @@ XMLToXMLString(JSContext *cx, JSXML *xml, const JSXMLArray *ancestorNSes,
 
       case JSXML_CLASS_ATTRIBUTE:
         /* Step 5. */
-        return EscapeAttributeValue(cx, &sb, xml->xml_value,
-                                    (indentLevel & TO_SOURCE_FLAG) != 0);
+        return EscapeAttributeValue(cx, &sb, xml->xml_value);
 
       case JSXML_CLASS_COMMENT:
         /* Step 6. */
@@ -2761,17 +2739,17 @@ XMLToXMLString(JSContext *cx, JSXML *xml, const JSXMLArray *ancestorNSes,
         if (kid)
             goto list_out;
 
-        if (!sb.base) {
-            if (!STRING_BUFFER_OK(&sb)) {
-                JS_ReportOutOfMemory(cx);
-                return NULL;
-            }
+        if (!sb.base)
             return cx->runtime->emptyString;
+
+        if (!STRING_BUFFER_OK(&sb)) {
+            JS_ReportOutOfMemory(cx);
+            return NULL;
         }
 
-        str = js_NewString(cx, sb.base, STRING_BUFFER_OFFSET(&sb), 0);
+        str = js_NewString(cx, sb.base, STRING_BUFFER_OFFSET(&sb));
       list_out:
-        if (!str)
+        if (!str && STRING_BUFFER_OK(&sb))
             js_FinishStringBuffer(&sb);
         return str;
 
@@ -3002,7 +2980,7 @@ XMLToXMLString(JSContext *cx, JSXML *xml, const JSXMLArray *ancestorNSes,
                 goto out;
             nextIndentLevel = indentLevel + i;
         } else {
-            nextIndentLevel = indentLevel & TO_SOURCE_FLAG;
+            nextIndentLevel = 0;
         }
 
         XMLArrayCursorInit(&cursor, &xml->xml_kids);
@@ -3022,7 +3000,7 @@ XMLToXMLString(JSContext *cx, JSXML *xml, const JSXMLArray *ancestorNSes,
 
         if (pretty && indentKids) {
             js_AppendChar(&sb, '\n');
-            js_RepeatChar(&sb, ' ', indentLevel & ~TO_SOURCE_FLAG);
+            js_RepeatChar(&sb, ' ', indentLevel);
         }
         js_AppendCString(&sb, "</");
 
@@ -3042,7 +3020,7 @@ XMLToXMLString(JSContext *cx, JSXML *xml, const JSXMLArray *ancestorNSes,
         goto out;
     }
 
-    str = js_NewString(cx, sb.base, STRING_BUFFER_OFFSET(&sb), 0);
+    str = js_NewString(cx, sb.base, STRING_BUFFER_OFFSET(&sb));
 out:
     js_LeaveLocalRootScopeWithResult(cx, STRING_TO_JSVAL(str));
     if (!str && STRING_BUFFER_OK(&sb))
@@ -3055,7 +3033,7 @@ out:
 
 /* ECMA-357 10.2 */
 static JSString *
-ToXMLString(JSContext *cx, jsval v, uint32 toSourceFlag)
+ToXMLString(JSContext *cx, jsval v)
 {
     JSObject *obj;
     JSString *str;
@@ -3064,9 +3042,7 @@ ToXMLString(JSContext *cx, jsval v, uint32 toSourceFlag)
     if (JSVAL_IS_NULL(v) || JSVAL_IS_VOID(v)) {
         JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL,
                              JSMSG_BAD_XML_CONVERSION,
-                             js_type_strs[JSVAL_IS_NULL(v)
-                                          ? JSTYPE_NULL
-                                          : JSTYPE_VOID]);
+                             JSVAL_IS_NULL(v) ? js_null_str : js_undefined_str);
         return NULL;
     }
 
@@ -3088,7 +3064,7 @@ ToXMLString(JSContext *cx, jsval v, uint32 toSourceFlag)
 
     /* Handle non-element cases in this switch, returning from each case. */
     xml = (JSXML *) JS_GetPrivate(cx, obj);
-    return XMLToXMLString(cx, xml, NULL, toSourceFlag | 0);
+    return XMLToXMLString(cx, xml, NULL, 0);
 }
 
 static JSXMLQName *
@@ -3105,12 +3081,8 @@ ToAttributeName(JSContext *cx, jsval v)
         uri = prefix = cx->runtime->emptyString;
     } else {
         if (JSVAL_IS_PRIMITIVE(v)) {
-            name = js_DecompileValueGenerator(cx, JSDVG_IGNORE_STACK, v, NULL);
-            if (name) {
-                JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL,
-                                     JSMSG_BAD_XML_ATTR_NAME,
-                                     JS_GetStringBytes(name));
-            }
+            js_ReportValueError(cx, JSMSG_BAD_XML_ATTR_NAME,
+                                JSDVG_IGNORE_STACK, v, NULL);
             return NULL;
         }
 
@@ -3140,12 +3112,46 @@ ToAttributeName(JSContext *cx, jsval v)
     if (!qn)
         return NULL;
 
-    JS_PUSH_TEMP_ROOT_QNAME(cx, qn, &tvr);
+    JS_PUSH_TEMP_ROOT_GCTHING(cx, qn, &tvr);
     obj = js_GetAttributeNameObject(cx, qn);
     JS_POP_TEMP_ROOT(cx, &tvr);
     if (!obj)
         return NULL;
     return qn;
+}
+
+static void
+ReportBadXMLName(JSContext *cx, jsval id)
+{
+    js_ReportValueError(cx, JSMSG_BAD_XML_NAME, JSDVG_IGNORE_STACK, id, NULL);
+}
+
+static JSBool
+IsFunctionQName(JSContext *cx, JSXMLQName *qn, jsid *funidp)
+{
+    JSAtom *atom;
+
+    atom = cx->runtime->atomState.lazy.functionNamespaceURIAtom;
+    if (qn->uri && atom &&
+        (qn->uri == ATOM_TO_STRING(atom) ||
+         js_EqualStrings(qn->uri, ATOM_TO_STRING(atom)))) {
+        return JS_ValueToId(cx, STRING_TO_JSVAL(qn->localName), funidp);
+    }
+    *funidp = 0;
+    return JS_TRUE;
+}
+
+JSBool
+js_IsFunctionQName(JSContext *cx, JSObject *obj, jsid *funidp)
+{
+    JSXMLQName *qn;
+
+    if (OBJ_GET_CLASS(cx, obj) == &js_QNameClass.base) {
+        qn = (JSXMLQName *) JS_GetPrivate(cx, obj);
+        return IsFunctionQName(cx, qn, funidp);
+    }
+    *funidp = 0;
+    return JS_TRUE;
 }
 
 static JSXMLQName *
@@ -3156,15 +3162,12 @@ ToXMLName(JSContext *cx, jsval v, jsid *funidp)
     JSClass *clasp;
     uint32 index;
     JSXMLQName *qn;
-    JSAtom *atom;
 
     if (JSVAL_IS_STRING(v)) {
         name = JSVAL_TO_STRING(v);
     } else {
         if (JSVAL_IS_PRIMITIVE(v)) {
-            name = js_DecompileValueGenerator(cx, JSDVG_IGNORE_STACK, v, NULL);
-            if (name)
-                goto bad;
+            ReportBadXMLName(cx, v);
             return NULL;
         }
 
@@ -3198,7 +3201,7 @@ ToXMLName(JSContext *cx, jsval v, jsid *funidp)
         goto bad;
 
     if (*JSSTRING_CHARS(name) == '@') {
-        name = js_NewDependentString(cx, name, 1, JSSTRING_LENGTH(name) - 1, 0);
+        name = js_NewDependentString(cx, name, 1, JSSTRING_LENGTH(name) - 1);
         if (!name)
             return NULL;
         *funidp = 0;
@@ -3213,15 +3216,8 @@ construct:
 
 out:
     qn = (JSXMLQName *) JS_GetPrivate(cx, obj);
-    atom = cx->runtime->atomState.lazy.functionNamespaceURIAtom;
-    if (qn->uri && atom &&
-        (qn->uri == ATOM_TO_STRING(atom) ||
-         js_EqualStrings(qn->uri, ATOM_TO_STRING(atom)))) {
-        if (!JS_ValueToId(cx, STRING_TO_JSVAL(qn->localName), funidp))
-            return NULL;
-    } else {
-        *funidp = 0;
-    }
+    if (!IsFunctionQName(cx, qn, funidp))
+        return NULL;
     return qn;
 
 bad:
@@ -3431,7 +3427,7 @@ DeepCopyInLRS(JSContext *cx, JSXML *xml, uintN flags)
     /* Our caller must be protecting newborn objects. */
     JS_ASSERT(cx->localRootStack);
 
-    copy = js_NewXML(cx, xml->xml_class);
+    copy = js_NewXML(cx, (JSXMLClass) xml->xml_class);
     if (!copy)
         return NULL;
     qn = xml->name;
@@ -3487,30 +3483,11 @@ out:
     return copy;
 }
 
-static void
-ReportBadXMLName(JSContext *cx, jsval id)
-{
-    JSString *name;
-
-    name = js_DecompileValueGenerator(cx, JSDVG_IGNORE_STACK, id, NULL);
-    if (name) {
-        JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL,
-                             JSMSG_BAD_XML_NAME,
-                             JS_GetStringBytes(name));
-    }
-}
-
 /* ECMA-357 9.1.1.4 XML [[DeleteByIndex]]. */
-static JSBool
-DeleteByIndex(JSContext *cx, JSXML *xml, jsval id, jsval *vp)
+static void
+DeleteByIndex(JSContext *cx, JSXML *xml, uint32 index)
 {
-    uint32 index;
     JSXML *kid;
-
-    if (!js_IdIsIndex(id, &index)) {
-        ReportBadXMLName(cx, id);
-        return JS_FALSE;
-    }
 
     if (JSXML_HAS_KIDS(xml) && index < xml->xml_kids.length) {
         kid = XMLARRAY_MEMBER(&xml->xml_kids, index, JSXML);
@@ -3518,9 +3495,6 @@ DeleteByIndex(JSContext *cx, JSXML *xml, jsval id, jsval *vp)
             kid->parent = NULL;
         XMLArrayDelete(cx, &xml->xml_kids, index, JS_TRUE);
     }
-
-    *vp = JSVAL_TRUE;
-    return JS_TRUE;
 }
 
 typedef JSBool (*JSXMLNameMatcher)(JSXMLQName *nameqn, JSXML *xml);
@@ -3862,21 +3836,15 @@ IndexToIdVal(JSContext *cx, uint32 index, jsval *idvp)
 
 /* ECMA-357 9.1.1.12 XML [[Replace]]. */
 static JSBool
-Replace(JSContext *cx, JSXML *xml, jsval id, jsval v)
+Replace(JSContext *cx, JSXML *xml, uint32 i, jsval v)
 {
-    uint32 i, n;
+    uint32 n;
     JSXML *vxml, *kid;
     JSObject *vobj;
-    jsval junk;
     JSString *str;
 
     if (!JSXML_HAS_KIDS(xml))
         return JS_TRUE;
-
-    if (!js_IdIsIndex(id, &i)) {
-        ReportBadXMLName(cx, id);
-        return JS_FALSE;
-    }
 
     /*
      * 9.1.1.12
@@ -3884,11 +3852,8 @@ Replace(JSContext *cx, JSXML *xml, jsval id, jsval v)
      * It should therefore constrain callers to pass in _i <= x.[[Length]]_.
      */
     n = xml->xml_kids.length;
-    if (i >= n) {
-        if (!IndexToIdVal(cx, n, &id))
-            return JS_FALSE;
+    if (i > n)
         i = n;
-    }
 
     vxml = NULL;
     if (!JSVAL_IS_PRIMITIVE(v)) {
@@ -3908,8 +3873,8 @@ Replace(JSContext *cx, JSXML *xml, jsval id, jsval v)
         goto do_replace;
 
       case JSXML_CLASS_LIST:
-        if (i < n && !DeleteByIndex(cx, xml, id, &junk))
-            return JS_FALSE;
+        if (i < n)
+            DeleteByIndex(cx, xml, i);
         if (!Insert(cx, xml, i, v))
             return JS_FALSE;
         break;
@@ -3939,120 +3904,77 @@ Replace(JSContext *cx, JSXML *xml, jsval id, jsval v)
     return JS_TRUE;
 }
 
-/* Forward declared -- its implementation uses other statics that call it. */
-static JSBool
-ResolveValue(JSContext *cx, JSXML *list, JSXML **result);
-
-/* ECMA-357 9.1.1.3 XML [[Delete]], 9.2.1.3 XML [[Delete]]. */
-static JSBool
-DeleteProperty(JSContext *cx, JSObject *obj, jsval id, jsval *vp)
+/* ECMA-357 9.1.1.3 XML [[Delete]], 9.2.1.3 XML [[Delete]] qname cases. */
+static void
+DeleteNamedProperty(JSContext *cx, JSXML *xml, JSXMLQName *nameqn,
+                    JSBool attributes)
 {
-    JSXML *xml, *kid, *parent;
-    JSBool isIndex;
     JSXMLArray *array;
-    uint32 length, index, kidIndex, deleteCount;
-    JSXMLQName *nameqn;
-    jsid funid;
-    JSObject *nameobj, *kidobj;
+    uint32 index, deleteCount;
+    JSXML *kid;
     JSXMLNameMatcher matcher;
 
-    xml = (JSXML *) JS_GetPrivate(cx, obj);
-    isIndex = js_IdIsIndex(id, &index);
-    if (JSXML_HAS_KIDS(xml)) {
-        array = &xml->xml_kids;
-        length = array->length;
-    } else {
-        array = NULL;
-        length = 0;
-    }
-
     if (xml->xml_class == JSXML_CLASS_LIST) {
-        /* ECMA-357 9.2.1.3. */
-        if (isIndex && index < length) {
+        array = &xml->xml_kids;
+        for (index = 0; index < array->length; index++) {
             kid = XMLARRAY_MEMBER(array, index, JSXML);
-            if (!kid)
-                goto out;
+            if (kid && kid->xml_class == JSXML_CLASS_ELEMENT)
+                DeleteNamedProperty(cx, kid, nameqn, attributes);
+        }
+    } else if (xml->xml_class == JSXML_CLASS_ELEMENT) {
+        if (attributes) {
+            array = &xml->xml_attrs;
+            matcher = MatchAttrName;
+        } else {
+            array = &xml->xml_kids;
+            matcher = MatchElemName;
+        }
+        deleteCount = 0;
+        for (index = 0; index < array->length; index++) {
+            kid = XMLARRAY_MEMBER(array, index, JSXML);
+            if (kid && matcher(nameqn, kid)) {
+                kid->parent = NULL;
+                XMLArrayDelete(cx, array, index, JS_FALSE);
+                ++deleteCount;
+            } else if (deleteCount != 0) {
+                XMLARRAY_SET_MEMBER(array,
+                                    index - deleteCount,
+                                    array->vector[index]);
+            }
+        }
+        array->length -= deleteCount;
+    }
+}
+
+/* ECMA-357 9.2.1.3 index case. */
+static void
+DeleteListElement(JSContext *cx, JSXML *xml, uint32 index)
+{
+    JSXML *kid, *parent;
+    uint32 kidIndex;
+
+    JS_ASSERT(xml->xml_class == JSXML_CLASS_LIST);
+
+    if (index < xml->xml_kids.length) {
+        kid = XMLARRAY_MEMBER(&xml->xml_kids, index, JSXML);
+        if (kid) {
             parent = kid->parent;
             if (parent) {
                 JS_ASSERT(parent != xml);
                 JS_ASSERT(JSXML_HAS_KIDS(parent));
 
                 if (kid->xml_class == JSXML_CLASS_ATTRIBUTE) {
-                    nameqn = kid->name;
-                    nameobj = js_GetAttributeNameObject(cx, nameqn);
-                    if (!nameobj || !js_GetXMLObject(cx, parent))
-                        return JS_FALSE;
-
-                    id = OBJECT_TO_JSVAL(nameobj);
-                    if (!DeleteProperty(cx, parent->object, id, vp))
-                        return JS_FALSE;
+                    DeleteNamedProperty(cx, parent, kid->name, JS_TRUE);
                 } else {
                     kidIndex = XMLARRAY_FIND_MEMBER(&parent->xml_kids, kid,
                                                     NULL);
                     JS_ASSERT(kidIndex != XML_NOT_FOUND);
-                    if (!IndexToIdVal(cx, kidIndex, &id))
-                        return JS_FALSE;
-                    if (!DeleteByIndex(cx, parent, id, vp))
-                        return JS_FALSE;
+                    DeleteByIndex(cx, parent, kidIndex);
                 }
             }
-
-            XMLArrayDelete(cx, array, index, JS_TRUE);
-        } else {
-            for (index = 0; index < length; index++) {
-                kid = XMLARRAY_MEMBER(array, index, JSXML);
-                if (kid && kid->xml_class == JSXML_CLASS_ELEMENT) {
-                    kidobj = js_GetXMLObject(cx, kid);
-                    if (!kidobj || !DeleteProperty(cx, kidobj, id, vp))
-                        return JS_FALSE;
-                }
-            }
-        }
-    } else {
-        /* ECMA-357 9.1.1.3. */
-        if (isIndex) {
-            /* See NOTE in spec: this variation is reserved for future use. */
-            ReportBadXMLName(cx, id);
-            return JS_FALSE;
-        }
-
-        nameqn = ToXMLName(cx, id, &funid);
-        if (!nameqn)
-            return JS_FALSE;
-        if (funid)
-            goto out;
-        nameobj = nameqn->object;
-
-        if (OBJ_GET_CLASS(cx, nameobj) == &js_AttributeNameClass) {
-            if (xml->xml_class != JSXML_CLASS_ELEMENT)
-                goto out;
-            array = &xml->xml_attrs;
-            length = array->length;
-            matcher = MatchAttrName;
-        } else {
-            matcher = MatchElemName;
-        }
-        if (length != 0) {
-            deleteCount = 0;
-            for (index = 0; index < length; index++) {
-                kid = XMLARRAY_MEMBER(array, index, JSXML);
-                if (kid && matcher(nameqn, kid)) {
-                    kid->parent = NULL;
-                    XMLArrayDelete(cx, array, index, JS_FALSE);
-                    ++deleteCount;
-                } else if (deleteCount != 0) {
-                    XMLARRAY_SET_MEMBER(array,
-                                        index - deleteCount,
-                                        array->vector[index]);
-                }
-            }
-            array->length -= deleteCount;
+            XMLArrayDelete(cx, &xml->xml_kids, index, JS_TRUE);
         }
     }
-
-out:
-    *vp = JSVAL_TRUE;
-    return JS_TRUE;
 }
 
 static JSBool
@@ -4076,44 +3998,53 @@ SyncInScopeNamespaces(JSContext *cx, JSXML *xml)
 }
 
 static JSBool
-GetNamedProperty(JSContext *cx, JSXML *xml, JSXMLQName* nameqn,
-                 JSBool attributes, JSXML *list)
+GetNamedProperty(JSContext *cx, JSXML *xml, JSXMLQName* nameqn, JSXML *list)
 {
     JSXMLArray *array;
     JSXMLNameMatcher matcher;
     JSXMLArrayCursor cursor;
     JSXML *kid;
-    JSBool ok;
+    JSBool attrs;
 
-    if (!JSXML_HAS_KIDS(xml))
-        return JS_TRUE;
-
-    if (attributes) {
-        array = &xml->xml_attrs;
-        matcher = MatchAttrName;
-    } else {
-        array = &xml->xml_kids;
-        matcher = MatchElemName;
-    }
-
-    XMLArrayCursorInit(&cursor, array);
-    while ((kid = (JSXML *) XMLArrayCursorNext(&cursor)) != NULL) {
-        if (matcher(nameqn, kid)) {
-            if (!attributes && kid->xml_class == JSXML_CLASS_ELEMENT) {
-                ok = SyncInScopeNamespaces(cx, kid);
-                if (!ok)
-                    goto out;
+    if (xml->xml_class == JSXML_CLASS_LIST) {
+        XMLArrayCursorInit(&cursor, &xml->xml_kids);
+        while ((kid = (JSXML *) XMLArrayCursorNext(&cursor)) != NULL) {
+            if (kid->xml_class == JSXML_CLASS_ELEMENT &&
+                !GetNamedProperty(cx, kid, nameqn, list)) {
+                break;
             }
-            ok = Append(cx, list, kid);
-            if (!ok)
-                goto out;
         }
-    }
-    ok = JS_TRUE;
+        XMLArrayCursorFinish(&cursor);
+        if (kid)
+            return JS_FALSE;
+    } else if (xml->xml_class == JSXML_CLASS_ELEMENT) {
+        attrs = (OBJ_GET_CLASS(cx, nameqn->object) == &js_AttributeNameClass);
+        if (attrs) {
+            array = &xml->xml_attrs;
+            matcher = MatchAttrName;
+        } else {
+            array = &xml->xml_kids;
+            matcher = MatchElemName;
+        }
 
-  out:
-    XMLArrayCursorFinish(&cursor);
-    return ok;
+        XMLArrayCursorInit(&cursor, array);
+        while ((kid = (JSXML *) XMLArrayCursorNext(&cursor)) != NULL) {
+            if (matcher(nameqn, kid)) {
+                if (!attrs &&
+                    kid->xml_class == JSXML_CLASS_ELEMENT &&
+                    !SyncInScopeNamespaces(cx, kid)) {
+                    break;
+                }
+                if (!Append(cx, list, kid))
+                    break;
+            }
+        }
+        XMLArrayCursorFinish(&cursor);
+        if (kid)
+            return JS_FALSE;
+    }
+
+    return JS_TRUE;
 }
 
 /* ECMA-357 9.1.1.1 XML [[Get]] and 9.2.1.1 XMLList [[Get]]. */
@@ -4127,8 +4058,6 @@ GetProperty(JSContext *cx, JSObject *obj, jsval id, jsval *vp)
     jsid funid;
     jsval roots[2];
     JSTempValueRooter tvr;
-    JSBool attributes;
-    JSXMLArrayCursor cursor;
 
     xml = (JSXML *) JS_GetInstancePrivate(cx, obj, &js_XMLClass, NULL);
     if (!xml)
@@ -4181,35 +4110,20 @@ GetProperty(JSContext *cx, JSObject *obj, jsval id, jsval *vp)
         tvr.count++;
 
         list = (JSXML *) JS_GetPrivate(cx, listobj);
-        attributes = (OBJ_GET_CLASS(cx, nameqn->object) ==
-                      &js_AttributeNameClass);
-
-        if (xml->xml_class == JSXML_CLASS_LIST) {
-            XMLArrayCursorInit(&cursor, &xml->xml_kids);
-            while ((kid = (JSXML *) XMLArrayCursorNext(&cursor)) != NULL) {
-                if (kid->xml_class == JSXML_CLASS_ELEMENT &&
-                    !GetNamedProperty(cx, kid, nameqn, attributes, list)) {
-                    listobj = NULL;
-                    break;
-                }
-            }
-            XMLArrayCursorFinish(&cursor);
+        if (!GetNamedProperty(cx, xml, nameqn, list)) {
+            listobj = NULL;
         } else {
-            if (!GetNamedProperty(cx, xml, nameqn, attributes, list))
-                listobj = NULL;
+            /*
+             * Erratum: ECMA-357 9.1.1.1 misses that [[Append]] sets the
+             * given list's [[TargetProperty]] to the property that is being
+             * appended. This means that any use of the internal [[Get]]
+             * property returns a list which, when used by e.g. [[Insert]]
+             * duplicates the last element matched by id. See bug 336921.
+             */
+            list->xml_target = xml;
+            list->xml_targetprop = nameqn;
+            *vp = OBJECT_TO_JSVAL(listobj);
         }
-
-        /*
-         * Erratum: ECMA-357 9.1.1.1 misses that [[Append]] sets the given
-         * list's [[TargetProperty]] to the property that is being appended.
-         * This means that any use of the internal [[Get]] property returns
-         * a list which, when used by e.g. [[Insert]] duplicates the last
-         * element matched by id.
-         * See bug 336921.
-         */
-        list->xml_target = xml;
-        list->xml_targetprop = nameqn;
-        *vp = OBJECT_TO_JSVAL(listobj);
     }
 
     JS_POP_TEMP_ROOT(cx, &tvr);
@@ -4247,6 +4161,10 @@ KidToString(JSContext *cx, JSXML *xml, uint32 index)
     return js_ValueToString(cx, OBJECT_TO_JSVAL(kidobj));
 }
 
+/* Forward declared -- its implementation uses other statics that call it. */
+static JSBool
+ResolveValue(JSContext *cx, JSXML *list, JSXML **result);
+
 /* ECMA-357 9.1.1.2 XML [[Put]] and 9.2.1.2 XMLList [[Put]]. */
 static JSBool
 PutProperty(JSContext *cx, JSObject *obj, jsval id, jsval *vp)
@@ -4258,8 +4176,8 @@ PutProperty(JSContext *cx, JSObject *obj, jsval id, jsval *vp)
     JSXML *xml, *vxml, *rxml, *kid, *attr, *parent, *copy, *kid2, *match;
     JSObject *vobj, *nameobj, *attrobj, *parentobj, *kidobj, *copyobj;
     JSXMLQName *targetprop, *nameqn, *attrqn;
-    uint32 index, i, j, k, n, q;
-    jsval attrval, nsval, junk;
+    uint32 index, i, j, k, n, q, matchIndex;
+    jsval attrval, nsval;
     jsid funid;
     JSString *left, *right, *space;
     JSXMLNamespace *ns;
@@ -4289,297 +4207,312 @@ PutProperty(JSContext *cx, JSObject *obj, jsval id, jsval *vp)
     roots[VAL_ROOT] = *vp;
     JS_PUSH_TEMP_ROOT(cx, 3, roots, &tvr);
 
-    if (xml->xml_class == JSXML_CLASS_LIST) {
-        /* ECMA-357 9.2.1.2. */
-        if (js_IdIsIndex(id, &index)) {
-            /* Step 1 sets i to the property index. */
-            i = index;
+    if (js_IdIsIndex(id, &index)) {
+        if (xml->xml_class != JSXML_CLASS_LIST) {
+            /* See NOTE in spec: this variation is reserved for future use. */
+            ReportBadXMLName(cx, id);
+            goto bad;
+        }
 
-            /* 2(a-b). */
-            if (xml->xml_target) {
-                ok = ResolveValue(cx, xml->xml_target, &rxml);
-                if (!ok)
-                    goto out;
-                if (!rxml)
-                    goto out;
-                JS_ASSERT(rxml->object);
-            } else {
-                rxml = NULL;
-            }
+        /*
+         * Step 1 of ECMA-357 9.2.1.2 index case sets i to the property index.
+         */
+        i = index;
 
-            /* 2(c). */
-            if (index >= xml->xml_kids.length) {
-                /* 2(c)(i). */
-                if (rxml) {
-                    if (rxml->xml_class == JSXML_CLASS_LIST) {
-                        if (rxml->xml_kids.length != 1)
-                            goto out;
-                        rxml = XMLARRAY_MEMBER(&rxml->xml_kids, 0, JSXML);
-                        if (!rxml)
-                            goto out;
-                        ok = js_GetXMLObject(cx, rxml) != NULL;
-                        if (!ok)
-                            goto out;
-                    }
+        /* 2(a-b). */
+        if (xml->xml_target) {
+            ok = ResolveValue(cx, xml->xml_target, &rxml);
+            if (!ok)
+                goto out;
+            if (!rxml)
+                goto out;
+            JS_ASSERT(rxml->object);
+        } else {
+            rxml = NULL;
+        }
 
-                    /*
-                     * Erratum: ECMA-357 9.2.1.2 step 2(c)(ii) sets
-                     * _y.[[Parent]] = r_ where _r_ is the result of
-                     * [[ResolveValue]] called on _x.[[TargetObject]] in
-                     * 2(a)(i).  This can result in text parenting text:
-                     *
-                     *    var MYXML = new XML();
-                     *    MYXML.appendChild(new XML("<TEAM>Giants</TEAM>"));
-                     *
-                     * (testcase from Werner Sharp <wsharp@macromedia.com>).
-                     *
-                     * To match insertChildAfter, insertChildBefore,
-                     * prependChild, and setChildren, we should silently
-                     * do nothing in this case.
-                     */
-                    if (!JSXML_HAS_KIDS(rxml))
+        /* 2(c). */
+        if (index >= xml->xml_kids.length) {
+            /* 2(c)(i). */
+            if (rxml) {
+                if (rxml->xml_class == JSXML_CLASS_LIST) {
+                    if (rxml->xml_kids.length != 1)
+                        goto out;
+                    rxml = XMLARRAY_MEMBER(&rxml->xml_kids, 0, JSXML);
+                    if (!rxml)
+                        goto out;
+                    ok = js_GetXMLObject(cx, rxml) != NULL;
+                    if (!ok)
                         goto out;
                 }
 
-                /* 2(c)(ii) is distributed below as several js_NewXML calls. */
-                targetprop = xml->xml_targetprop;
-                if (!targetprop || IS_STAR(targetprop->localName)) {
-                    /* 2(c)(iv)(1-2), out of order w.r.t. 2(c)(iii). */
-                    kid = js_NewXML(cx, JSXML_CLASS_TEXT);
-                    if (!kid)
-                        goto bad;
-                } else {
-                    nameobj = js_GetXMLQNameObject(cx, targetprop);
-                    if (!nameobj)
-                        goto bad;
-                    if (OBJ_GET_CLASS(cx, nameobj) == &js_AttributeNameClass) {
-                        /*
-                         * 2(c)(iii)(1-3).
-                         * Note that rxml can't be null here, because target
-                         * and targetprop are non-null.
-                         */
-                        ok = GetProperty(cx, rxml->object, id, &attrval);
-                        if (!ok)
-                            goto out;
-                        if (JSVAL_IS_PRIMITIVE(attrval)) /* no such attribute */
-                            goto out;
-                        attrobj = JSVAL_TO_OBJECT(attrval);
-                        attr = (JSXML *) JS_GetPrivate(cx, attrobj);
-                        if (JSXML_LENGTH(attr) != 0)
-                            goto out;
-
-                        kid = js_NewXML(cx, JSXML_CLASS_ATTRIBUTE);
-                    } else {
-                        /* 2(c)(v). */
-                        kid = js_NewXML(cx, JSXML_CLASS_ELEMENT);
-                    }
-                    if (!kid)
-                        goto bad;
-
-                    /* An important bit of 2(c)(ii). */
-                    kid->name = targetprop;
-                }
-
-                /* Final important bit of 2(c)(ii). */
-                kid->parent = rxml;
-
-                /* 2(c)(vi-vii). */
-                i = xml->xml_kids.length;
-                if (kid->xml_class != JSXML_CLASS_ATTRIBUTE) {
-                    /*
-                     * 2(c)(vii)(1) tests whether _y.[[Parent]]_ is not null.
-                     * y.[[Parent]] is here called kid->parent, which we know
-                     * from 2(c)(ii) is _r_, here called rxml.  So let's just
-                     * test that!  Erratum, the spec should be simpler here.
-                     */
-                    if (rxml) {
-                        JS_ASSERT(JSXML_HAS_KIDS(rxml));
-                        n = rxml->xml_kids.length;
-                        j = n - 1;
-                        if (n != 0 && i != 0) {
-                            for (n = j, j = 0; j < n; j++) {
-                                if (rxml->xml_kids.vector[j] ==
-                                    xml->xml_kids.vector[i-1]) {
-                                    break;
-                                }
-                            }
-                        }
-
-                        kidobj = js_GetXMLObject(cx, kid);
-                        if (!kidobj)
-                            goto bad;
-                        ok = Insert(cx, rxml, j + 1, OBJECT_TO_JSVAL(kidobj));
-                        if (!ok)
-                            goto out;
-                    }
-
-                    /*
-                     * 2(c)(vii)(2-3).
-                     * Erratum: [[PropertyName]] in 2(c)(vii)(3) must be a
-                     * typo for [[TargetProperty]].
-                     */
-                    if (vxml) {
-                        kid->name = (vxml->xml_class == JSXML_CLASS_LIST)
-                                    ? vxml->xml_targetprop
-                                    : vxml->name;
-                    }
-                }
-
-                /* 2(c)(viii). */
-                ok = Append(cx, xml, kid);
-                if (!ok)
+                /*
+                 * Erratum: ECMA-357 9.2.1.2 step 2(c)(ii) sets
+                 * _y.[[Parent]] = r_ where _r_ is the result of
+                 * [[ResolveValue]] called on _x.[[TargetObject]] in
+                 * 2(a)(i).  This can result in text parenting text:
+                 *
+                 *    var MYXML = new XML();
+                 *    MYXML.appendChild(new XML("<TEAM>Giants</TEAM>"));
+                 *
+                 * (testcase from Werner Sharp <wsharp@macromedia.com>).
+                 *
+                 * To match insertChildAfter, insertChildBefore,
+                 * prependChild, and setChildren, we should silently
+                 * do nothing in this case.
+                 */
+                if (!JSXML_HAS_KIDS(rxml))
                     goto out;
             }
 
-            /* 2(d). */
-            if (!vxml ||
-                vxml->xml_class == JSXML_CLASS_TEXT ||
-                vxml->xml_class == JSXML_CLASS_ATTRIBUTE) {
-                ok = JS_ConvertValue(cx, *vp, JSTYPE_STRING, vp);
-                if (!ok)
-                    goto out;
-                roots[VAL_ROOT] = *vp;
-            }
-
-            /* 2(e). */
-            kid = XMLARRAY_MEMBER(&xml->xml_kids, i, JSXML);
-            if (!kid)
-                goto out;
-            parent = kid->parent;
-            if (kid->xml_class == JSXML_CLASS_ATTRIBUTE) {
-                nameobj = js_GetAttributeNameObject(cx, kid->name);
+            /* 2(c)(ii) is distributed below as several js_NewXML calls. */
+            targetprop = xml->xml_targetprop;
+            if (!targetprop || IS_STAR(targetprop->localName)) {
+                /* 2(c)(iv)(1-2), out of order w.r.t. 2(c)(iii). */
+                kid = js_NewXML(cx, JSXML_CLASS_TEXT);
+                if (!kid)
+                    goto bad;
+            } else {
+                nameobj = js_GetXMLQNameObject(cx, targetprop);
                 if (!nameobj)
                     goto bad;
-                id = OBJECT_TO_JSVAL(nameobj);
+                if (OBJ_GET_CLASS(cx, nameobj) == &js_AttributeNameClass) {
+                    /*
+                     * 2(c)(iii)(1-3).
+                     * Note that rxml can't be null here, because target
+                     * and targetprop are non-null.
+                     */
+                    ok = GetProperty(cx, rxml->object, id, &attrval);
+                    if (!ok)
+                        goto out;
+                    if (JSVAL_IS_PRIMITIVE(attrval))    /* no such attribute */
+                        goto out;
+                    attrobj = JSVAL_TO_OBJECT(attrval);
+                    attr = (JSXML *) JS_GetPrivate(cx, attrobj);
+                    if (JSXML_LENGTH(attr) != 0)
+                        goto out;
 
-                if (parent) {
-                    /* 2(e)(i). */
-                    parentobj = js_GetXMLObject(cx, parent);
-                    if (!parentobj)
+                    kid = js_NewXML(cx, JSXML_CLASS_ATTRIBUTE);
+                } else {
+                    /* 2(c)(v). */
+                    kid = js_NewXML(cx, JSXML_CLASS_ELEMENT);
+                }
+                if (!kid)
+                    goto bad;
+
+                /* An important bit of 2(c)(ii). */
+                kid->name = targetprop;
+            }
+
+            /* Final important bit of 2(c)(ii). */
+            kid->parent = rxml;
+
+            /* 2(c)(vi-vii). */
+            i = xml->xml_kids.length;
+            if (kid->xml_class != JSXML_CLASS_ATTRIBUTE) {
+                /*
+                 * 2(c)(vii)(1) tests whether _y.[[Parent]]_ is not null.
+                 * y.[[Parent]] is here called kid->parent, which we know
+                 * from 2(c)(ii) is _r_, here called rxml.  So let's just
+                 * test that!  Erratum, the spec should be simpler here.
+                 */
+                if (rxml) {
+                    JS_ASSERT(JSXML_HAS_KIDS(rxml));
+                    n = rxml->xml_kids.length;
+                    j = n - 1;
+                    if (n != 0 && i != 0) {
+                        for (n = j, j = 0; j < n; j++) {
+                            if (rxml->xml_kids.vector[j] ==
+                                xml->xml_kids.vector[i-1]) {
+                                break;
+                            }
+                        }
+                    }
+
+                    kidobj = js_GetXMLObject(cx, kid);
+                    if (!kidobj)
                         goto bad;
-                    ok = PutProperty(cx, parentobj, id, vp);
+                    ok = Insert(cx, rxml, j + 1, OBJECT_TO_JSVAL(kidobj));
                     if (!ok)
                         goto out;
+                }
 
-                    /* 2(e)(ii). */
-                    ok = GetProperty(cx, parentobj, id, vp);
-                    if (!ok)
-                        goto out;
-                    attr = (JSXML *) JS_GetPrivate(cx, JSVAL_TO_OBJECT(*vp));
-
-                    /* 2(e)(iii). */
-                    xml->xml_kids.vector[i] = attr->xml_kids.vector[0];
+                /*
+                 * 2(c)(vii)(2-3).
+                 * Erratum: [[PropertyName]] in 2(c)(vii)(3) must be a
+                 * typo for [[TargetProperty]].
+                 */
+                if (vxml) {
+                    kid->name = (vxml->xml_class == JSXML_CLASS_LIST)
+                        ? vxml->xml_targetprop
+                        : vxml->name;
                 }
             }
 
-            /* 2(f). */
-            else if (vxml && vxml->xml_class == JSXML_CLASS_LIST) {
-                /* 2(f)(i) Create a shallow copy _c_ of _V_. */
-                copyobj = js_NewXMLObject(cx, JSXML_CLASS_LIST);
-                if (!copyobj)
+            /* 2(c)(viii). */
+            ok = Append(cx, xml, kid);
+            if (!ok)
+                goto out;
+        }
+
+        /* 2(d). */
+        if (!vxml ||
+            vxml->xml_class == JSXML_CLASS_TEXT ||
+            vxml->xml_class == JSXML_CLASS_ATTRIBUTE) {
+            ok = JS_ConvertValue(cx, *vp, JSTYPE_STRING, vp);
+            if (!ok)
+                goto out;
+            roots[VAL_ROOT] = *vp;
+        }
+
+        /* 2(e). */
+        kid = XMLARRAY_MEMBER(&xml->xml_kids, i, JSXML);
+        if (!kid)
+            goto out;
+        parent = kid->parent;
+        if (kid->xml_class == JSXML_CLASS_ATTRIBUTE) {
+            nameobj = js_GetAttributeNameObject(cx, kid->name);
+            if (!nameobj)
+                goto bad;
+            id = OBJECT_TO_JSVAL(nameobj);
+
+            if (parent) {
+                /* 2(e)(i). */
+                parentobj = js_GetXMLObject(cx, parent);
+                if (!parentobj)
                     goto bad;
-                copy = (JSXML *) JS_GetPrivate(cx, copyobj);
-                n = vxml->xml_kids.length;
-                ok = XMLArraySetCapacity(cx, &copy->xml_kids, n);
+                ok = PutProperty(cx, parentobj, id, vp);
                 if (!ok)
                     goto out;
-                for (k = 0; k < n; k++) {
-                    kid2 = XMLARRAY_MEMBER(&vxml->xml_kids, k, JSXML);
-                    XMLARRAY_SET_MEMBER(&copy->xml_kids, k, kid2);
-                }
 
-                JS_ASSERT(parent != xml);
-                if (parent) {
-                    q = XMLARRAY_FIND_MEMBER(&parent->xml_kids, kid, NULL);
-                    JS_ASSERT(q != XML_NOT_FOUND);
+                /* 2(e)(ii). */
+                ok = GetProperty(cx, parentobj, id, vp);
+                if (!ok)
+                    goto out;
+                attr = (JSXML *) JS_GetPrivate(cx, JSVAL_TO_OBJECT(*vp));
 
-                    ok = IndexToIdVal(cx, q, &id);
-                    if (!ok)
-                        goto out;
-                    ok = Replace(cx, parent, id, OBJECT_TO_JSVAL(copyobj));
-                    if (!ok)
-                        goto out;
+                /* 2(e)(iii). */
+                xml->xml_kids.vector[i] = attr->xml_kids.vector[0];
+            }
+        }
+
+        /* 2(f). */
+        else if (vxml && vxml->xml_class == JSXML_CLASS_LIST) {
+            /*
+             * 2(f)(i)
+             *
+             * Erratum: the spec says to create a shallow copy _c_ of _V_, but
+             * if we do that we never change the parent of each child in the
+             * list.  Since [[Put]] when called on an XML object deeply copies
+             * the provided list _V_, we also do so here.  Perhaps the shallow
+             * copy was a misguided optimization?
+             */
+            copy = DeepCopyInLRS(cx, vxml, 0);
+            if (!copy)
+                goto bad;
+            copyobj = js_GetXMLObject(cx, copy);
+            if (!copyobj)
+                goto bad;
+
+            JS_ASSERT(parent != xml);
+            if (parent) {
+                q = XMLARRAY_FIND_MEMBER(&parent->xml_kids, kid, NULL);
+                JS_ASSERT(q != XML_NOT_FOUND);
+                ok = Replace(cx, parent, q, OBJECT_TO_JSVAL(copyobj));
+                if (!ok)
+                    goto out;
 
 #ifdef DEBUG
-                    /* Erratum: this loop in the spec is useless. */
-                    for (j = 0, n = copy->xml_kids.length; j < n; j++) {
-                        kid2 = XMLARRAY_MEMBER(&parent->xml_kids, q + j, JSXML);
-                        JS_ASSERT(XMLARRAY_MEMBER(&copy->xml_kids, j, JSXML)
-                                  == kid2);
-                    }
+                /* Erratum: this loop in the spec is useless. */
+                for (j = 0, n = copy->xml_kids.length; j < n; j++) {
+                    kid2 = XMLARRAY_MEMBER(&parent->xml_kids, q + j, JSXML);
+                    JS_ASSERT(XMLARRAY_MEMBER(&copy->xml_kids, j, JSXML)
+                              == kid2);
+                }
 #endif
-                }
-
-                /*
-                 * 2(f)(iv-vi).
-                 * Erratum: notice the unhandled zero-length V basis case and
-                 * the off-by-one errors for the n != 0 cases in the spec.
-                 */
-                if (n == 0) {
-                    XMLArrayDelete(cx, &xml->xml_kids, i, JS_TRUE);
-                } else {
-                    ok = XMLArrayInsert(cx, &xml->xml_kids, i + 1, n - 1);
-                    if (!ok)
-                        goto out;
-
-                    for (j = 0; j < n; j++)
-                        xml->xml_kids.vector[i + j] = copy->xml_kids.vector[j];
-                }
             }
 
-            /* 2(g). */
-            else if (vxml || JSXML_HAS_VALUE(kid)) {
-                if (parent) {
-                    q = XMLARRAY_FIND_MEMBER(&parent->xml_kids, kid, NULL);
-                    JS_ASSERT(q != XML_NOT_FOUND);
-
-                    ok = IndexToIdVal(cx, q, &id);
-                    if (!ok)
-                        goto out;
-                    ok = Replace(cx, parent, id, *vp);
-                    if (!ok)
-                        goto out;
-
-                    vxml = XMLARRAY_MEMBER(&parent->xml_kids, q, JSXML);
-                    if (!vxml)
-                        goto out;
-                    roots[VAL_ROOT] = *vp = OBJECT_TO_JSVAL(vxml->object);
-                }
-
-                /*
-                 * 2(g)(iii).
-                 * Erratum: _V_ may not be of type XML, but all index-named
-                 * properties _x[i]_ in an XMLList _x_ must be of type XML,
-                 * according to 9.2.1.1 Overview and other places in the spec.
-                 *
-                 * Thanks to 2(d), we know _V_ (*vp here) is either a string
-                 * or an XML/XMLList object.  If *vp is a string, call ToXML
-                 * on it to satisfy the constraint.
-                 */
-                if (!vxml) {
-                    JS_ASSERT(JSVAL_IS_STRING(*vp));
-                    vobj = ToXML(cx, *vp);
-                    if (!vobj)
-                        goto bad;
-                    roots[VAL_ROOT] = *vp = OBJECT_TO_JSVAL(vobj);
-                    vxml = (JSXML *) JS_GetPrivate(cx, vobj);
-                }
-                XMLARRAY_SET_MEMBER(&xml->xml_kids, i, vxml);
-            }
-
-            /* 2(h). */
-            else {
-                kidobj = js_GetXMLObject(cx, kid);
-                if (!kidobj)
-                    goto bad;
-                id = ATOM_KEY(cx->runtime->atomState.starAtom);
-                ok = PutProperty(cx, kidobj, id, vp);
+            /*
+             * 2(f)(iv-vi).
+             * Erratum: notice the unhandled zero-length V basis case and
+             * the off-by-one errors for the n != 0 cases in the spec.
+             */
+            n = copy->xml_kids.length;
+            if (n == 0) {
+                XMLArrayDelete(cx, &xml->xml_kids, i, JS_TRUE);
+            } else {
+                ok = XMLArrayInsert(cx, &xml->xml_kids, i + 1, n - 1);
                 if (!ok)
                     goto out;
+
+                for (j = 0; j < n; j++)
+                    xml->xml_kids.vector[i + j] = copy->xml_kids.vector[j];
             }
-        } else {
+        }
+
+        /* 2(g). */
+        else if (vxml || JSXML_HAS_VALUE(kid)) {
+            if (parent) {
+                q = XMLARRAY_FIND_MEMBER(&parent->xml_kids, kid, NULL);
+                JS_ASSERT(q != XML_NOT_FOUND);
+                ok = Replace(cx, parent, q, *vp);
+                if (!ok)
+                    goto out;
+
+                vxml = XMLARRAY_MEMBER(&parent->xml_kids, q, JSXML);
+                if (!vxml)
+                    goto out;
+                roots[VAL_ROOT] = *vp = OBJECT_TO_JSVAL(vxml->object);
+            }
+
             /*
-             * 3.
+             * 2(g)(iii).
+             * Erratum: _V_ may not be of type XML, but all index-named
+             * properties _x[i]_ in an XMLList _x_ must be of type XML,
+             * according to 9.2.1.1 Overview and other places in the spec.
+             *
+             * Thanks to 2(d), we know _V_ (*vp here) is either a string
+             * or an XML/XMLList object.  If *vp is a string, call ToXML
+             * on it to satisfy the constraint.
+             */
+            if (!vxml) {
+                JS_ASSERT(JSVAL_IS_STRING(*vp));
+                vobj = ToXML(cx, *vp);
+                if (!vobj)
+                    goto bad;
+                roots[VAL_ROOT] = *vp = OBJECT_TO_JSVAL(vobj);
+                vxml = (JSXML *) JS_GetPrivate(cx, vobj);
+            }
+            XMLARRAY_SET_MEMBER(&xml->xml_kids, i, vxml);
+        }
+
+        /* 2(h). */
+        else {
+            kidobj = js_GetXMLObject(cx, kid);
+            if (!kidobj)
+                goto bad;
+            id = ATOM_KEY(cx->runtime->atomState.starAtom);
+            ok = PutProperty(cx, kidobj, id, vp);
+            if (!ok)
+                goto out;
+        }
+    } else {
+        /*
+         * ECMA-357 9.2.1.2/9.1.1.2 qname case.
+         */
+        nameqn = ToXMLName(cx, id, &funid);
+        if (!nameqn)
+            goto bad;
+        if (funid) {
+            ok = js_SetProperty(cx, obj, funid, vp);
+            goto out;
+        }
+        nameobj = nameqn->object;
+        roots[ID_ROOT] = OBJECT_TO_JSVAL(nameobj);
+
+        if (xml->xml_class == JSXML_CLASS_LIST) {
+            /*
+             * Step 3 of 9.2.1.2.
              * Erratum: if x.[[Length]] > 1 or [[ResolveValue]] returns null
              * or an r with r.[[Length]] != 1, throw TypeError.
              */
@@ -4597,36 +4530,23 @@ PutProperty(JSContext *cx, JSObject *obj, jsval id, jsval *vp)
                     goto out;
             }
             JS_ASSERT(JSXML_LENGTH(xml) == 1);
-            kid = XMLARRAY_MEMBER(&xml->xml_kids, 0, JSXML);
-            if (!kid)
+            xml = XMLARRAY_MEMBER(&xml->xml_kids, 0, JSXML);
+            if (!xml)
                 goto out;
-            kidobj = js_GetXMLObject(cx, kid);
-            if (!kidobj)
+            JS_ASSERT(xml->xml_class != JSXML_CLASS_LIST);
+            obj = js_GetXMLObject(cx, xml);
+            if (!obj)
                 goto bad;
-            ok = PutProperty(cx, kidobj, id, vp);
-            if (!ok)
-                goto out;
+            roots[OBJ_ROOT] = OBJECT_TO_JSVAL(obj);
+
+            /* FALL THROUGH to non-list case */
         }
-    } else {
+
         /*
          * ECMA-357 9.1.1.2.
          * Erratum: move steps 3 and 4 to before 1 and 2, to avoid wasted
          * effort in ToString or [[DeepCopy]].
          */
-        if (js_IdIsIndex(id, &index)) {
-            /* See NOTE in spec: this variation is reserved for future use. */
-            ReportBadXMLName(cx, id);
-            goto bad;
-        }
-
-        nameqn = ToXMLName(cx, id, &funid);
-        if (!nameqn)
-            goto bad;
-        if (funid) {
-            ok = js_SetProperty(cx, obj, funid, vp);
-            goto out;
-        }
-        nameobj = nameqn->object;
 
         if (JSXML_HAS_VALUE(xml))
             goto out;
@@ -4704,14 +4624,7 @@ PutProperty(JSContext *cx, JSObject *obj, jsval id, jsval *vp)
                     if (!match) {
                         match = attr;
                     } else {
-                        nameobj = js_GetAttributeNameObject(cx, attrqn);
-                        if (!nameobj)
-                            goto bad;
-
-                        id = OBJECT_TO_JSVAL(nameobj);
-                        ok = DeleteProperty(cx, obj, id, &junk);
-                        if (!ok)
-                            goto out;
+                        DeleteNamedProperty(cx, xml, attrqn, JS_TRUE);
                         --i;
                     }
                 }
@@ -4769,19 +4682,15 @@ PutProperty(JSContext *cx, JSObject *obj, jsval id, jsval *vp)
 
         /* 12. */
         k = n = xml->xml_kids.length;
+        matchIndex = XML_NOT_FOUND;
         kid2 = NULL;
         while (k != 0) {
             --k;
             kid = XMLARRAY_MEMBER(&xml->xml_kids, k, JSXML);
             if (kid && MatchElemName(nameqn, kid)) {
-                if (!JSVAL_IS_VOID(id)) {
-                    ok = DeleteByIndex(cx, xml, id, &junk);
-                    if (!ok)
-                        goto out;
-                }
-                ok = IndexToIdVal(cx, k, &id);
-                if (!ok)
-                    goto out;
+                if (matchIndex != XML_NOT_FOUND)
+                    DeleteByIndex(cx, xml, matchIndex);
+                matchIndex = k;
                 kid2 = kid;
             }
         }
@@ -4809,11 +4718,9 @@ PutProperty(JSContext *cx, JSObject *obj, jsval id, jsval *vp)
         }
 
         /* 13. */
-        if (JSVAL_IS_VOID(id)) {
+        if (matchIndex == XML_NOT_FOUND) {
             /* 13(a). */
-            ok = IndexToIdVal(cx, n, &id);
-            if (!ok)
-                goto out;
+            matchIndex = n;
 
             /* 13(b). */
             if (primitiveAssign) {
@@ -4842,7 +4749,7 @@ PutProperty(JSContext *cx, JSObject *obj, jsval id, jsval *vp)
                 ns = GetNamespace(cx, nameqn, NULL);
                 if (!ns)
                     goto bad;
-                ok = Replace(cx, xml, id, OBJECT_TO_JSVAL(vobj));
+                ok = Replace(cx, xml, matchIndex, OBJECT_TO_JSVAL(vobj));
                 if (!ok)
                     goto out;
                 ok = AddInScopeNamespace(cx, vxml, ns);
@@ -4855,9 +4762,8 @@ PutProperty(JSContext *cx, JSObject *obj, jsval id, jsval *vp)
         if (primitiveAssign) {
             JSXMLArrayCursor cursor;
 
-            js_IdIsIndex(id, &index);
             XMLArrayCursorInit(&cursor, &xml->xml_kids);
-            cursor.index = index;
+            cursor.index = matchIndex;
             kid = (JSXML *) XMLArrayCursorItem(&cursor);
             if (JSXML_HAS_KIDS(kid)) {
                 XMLArrayFinish(cx, &kid->xml_kids);
@@ -4871,13 +4777,13 @@ PutProperty(JSContext *cx, JSObject *obj, jsval id, jsval *vp)
                 if (ok && !IS_EMPTY(JSVAL_TO_STRING(*vp))) {
                     roots[VAL_ROOT] = *vp;
                     if ((JSXML *) XMLArrayCursorItem(&cursor) == kid)
-                        ok = Replace(cx, kid, JSVAL_ZERO, *vp);
+                        ok = Replace(cx, kid, 0, *vp);
                 }
             }
             XMLArrayCursorFinish(&cursor);
         } else {
             /* 15(a). */
-            ok = Replace(cx, xml, id, *vp);
+            ok = Replace(cx, xml, matchIndex, *vp);
         }
     }
 
@@ -4960,76 +4866,30 @@ ResolveValue(JSContext *cx, JSXML *list, JSXML **result)
     return JS_TRUE;
 }
 
-/*
- * HasProperty must be able to return a found JSProperty and the object in
- * which it was found, if id is of the form function::name.  For other ids,
- * if they index or name an XML child, we return FOUND_XML_PROPERTY in *propp
- * and null in *objp.
- *
- * DROP_PROPERTY helps HasProperty callers drop function properties without
- * trying to drop the magic FOUND_XML_PROPERTY cookie.
- */
-#define FOUND_XML_PROPERTY              ((JSProperty *) 1)
-#define DROP_PROPERTY(cx,pobj,prop)     (((prop) != FOUND_XML_PROPERTY)       \
-                                         ? OBJ_DROP_PROPERTY(cx, pobj, prop)  \
-                                         : (void) 0)
-
-/* ECMA-357 9.1.1.6 XML [[HasProperty]] and 9.2.1.5 XMLList [[HasProperty]]. */
 static JSBool
-HasProperty(JSContext *cx, JSObject *obj, jsval id, JSObject **objp,
-            JSProperty **propp)
+HasNamedProperty(JSXML *xml, JSXMLQName *nameqn)
 {
-    JSXML *xml, *kid;
+    JSBool found;
     JSXMLArrayCursor cursor;
-    JSObject *kidobj;
-    JSXMLQName *qn;
-    jsid funid;
+    JSXML *kid;
     JSXMLArray *array;
     JSXMLNameMatcher matcher;
     uint32 i, n;
 
-    *objp = NULL;
-    *propp = NULL;
-
-    xml = (JSXML *) JS_GetPrivate(cx, obj);
     if (xml->xml_class == JSXML_CLASS_LIST) {
-        n = JSXML_LENGTH(xml);
-        if (js_IdIsIndex(id, &i)) {
-            if (i < n)
-                *propp = FOUND_XML_PROPERTY;
-            return JS_TRUE;
-        }
-
+        found = JS_FALSE;
         XMLArrayCursorInit(&cursor, &xml->xml_kids);
         while ((kid = (JSXML *) XMLArrayCursorNext(&cursor)) != NULL) {
-            if (kid->xml_class == JSXML_CLASS_ELEMENT) {
-                kidobj = js_GetXMLObject(cx, kid);
-                if (!kidobj || !HasProperty(cx, kidobj, id, objp, propp))
-                    break;
-                if (*propp)
-                    break;
-            }
+            found = HasNamedProperty(kid, nameqn);
+            if (found)
+                break;
         }
         XMLArrayCursorFinish(&cursor);
-        if (kid)
-            return *propp != NULL;
-    } else {
-        if (xml->xml_class == JSXML_CLASS_ELEMENT && js_IdIsIndex(id, &i)) {
-            if (i == 0)
-                *propp = FOUND_XML_PROPERTY;
-            return JS_TRUE;
-        }
+        return found;
+    }
 
-        qn = ToXMLName(cx, id, &funid);
-        if (!qn)
-            return JS_FALSE;
-        if (funid)
-            return js_LookupProperty(cx, obj, funid, objp, propp);
-
-        if (xml->xml_class != JSXML_CLASS_ELEMENT)
-            return JS_TRUE;
-
-        if (OBJ_GET_CLASS(cx, qn->object) == &js_AttributeNameClass) {
+    if (xml->xml_class == JSXML_CLASS_ELEMENT) {
+        if (OBJ_GET_CLASS(cx, nameqn->object) == &js_AttributeNameClass) {
             array = &xml->xml_attrs;
             matcher = MatchAttrName;
         } else {
@@ -5038,13 +4898,92 @@ HasProperty(JSContext *cx, JSObject *obj, jsval id, JSObject **objp,
         }
         for (i = 0, n = array->length; i < n; i++) {
             kid = XMLARRAY_MEMBER(array, i, JSXML);
-            if (kid && matcher(qn, kid)) {
-                *propp = FOUND_XML_PROPERTY;
+            if (kid && matcher(nameqn, kid))
                 return JS_TRUE;
-            }
         }
     }
 
+    return JS_FALSE;
+}
+
+static JSBool
+HasIndexedProperty(JSXML *xml, uint32 i)
+{
+    if (xml->xml_class == JSXML_CLASS_LIST)
+        return i < JSXML_LENGTH(xml);
+
+    if (xml->xml_class == JSXML_CLASS_ELEMENT)
+        return i == 0;
+
+    return JS_FALSE;
+}
+
+static JSBool
+HasSimpleContent(JSXML *xml);
+
+static JSBool
+HasFunctionProperty(JSContext *cx, JSObject *obj, jsid funid, JSBool *found)
+{
+    JSObject *pobj;
+    JSProperty *prop;
+    JSXML *xml;
+    JSTempValueRooter tvr;
+    JSBool ok;
+
+    JS_ASSERT(OBJ_GET_CLASS(cx, obj) == &js_XMLClass);
+
+    if (!js_LookupProperty(cx, obj, funid, &pobj, &prop))
+        return JS_FALSE;
+    if (prop) {
+        OBJ_DROP_PROPERTY(cx, pobj, prop);
+    } else {
+        xml = (JSXML *) JS_GetPrivate(cx, obj);
+        if (HasSimpleContent(xml)) {
+            /*
+             * Search in String.prototype to set found whenever
+             * js_GetXMLFunction returns existing function.
+             */
+            JS_PUSH_TEMP_ROOT_OBJECT(cx, NULL, &tvr);
+            ok = js_GetClassPrototype(cx, NULL, INT_TO_JSID(JSProto_String),
+                                      &tvr.u.object);
+            JS_ASSERT(tvr.u.object);
+            if (ok) {
+                ok = js_LookupProperty(cx, tvr.u.object, funid, &pobj, &prop);
+                if (ok && prop)
+                    OBJ_DROP_PROPERTY(cx, pobj, prop);
+            }
+            JS_POP_TEMP_ROOT(cx, &tvr);
+            if (!ok)
+                return JS_FALSE;
+        }
+    }
+    *found = (prop != NULL);
+    return JS_TRUE;
+}
+
+/* ECMA-357 9.1.1.6 XML [[HasProperty]] and 9.2.1.5 XMLList [[HasProperty]]. */
+static JSBool
+HasProperty(JSContext *cx, JSObject *obj, jsval id, JSBool *found)
+{
+    JSXML *xml;
+    uint32 i;
+    JSXMLQName *qn;
+    jsid funid;
+
+    xml = (JSXML *) JS_GetPrivate(cx, obj);
+    if (js_IdIsIndex(id, &i)) {
+        *found = HasIndexedProperty(xml, i);
+    } else {
+        qn = ToXMLName(cx, id, &funid);
+        if (!qn)
+            return JS_FALSE;
+        if (funid) {
+            if (!HasFunctionProperty(cx, obj, funid, found))
+                return JS_FALSE;
+        } else {
+            *found = HasNamedProperty(xml, qn);
+        }
+    }
     return JS_TRUE;
 }
 
@@ -5062,37 +5001,16 @@ xml_finalize(JSContext *cx, JSObject *obj)
 }
 
 static void
-xml_mark_vector(JSContext *cx, JSXML **vec, uint32 len)
+xml_trace_vector(JSTracer *trc, JSXML **vec, uint32 len)
 {
     uint32 i;
-    JSXML *elt;
+    JSXML *xml;
 
     for (i = 0; i < len; i++) {
-        elt = vec[i];
-        {
-#ifdef GC_MARK_DEBUG
-            char buf[120];
-
-            if (elt->xml_class == JSXML_CLASS_LIST) {
-                strcpy(buf, js_XMLList_str);
-            } else if (JSXML_HAS_NAME(elt)) {
-                JSXMLQName *qn = elt->name;
-
-                JS_snprintf(buf, sizeof buf, "%s::%s",
-                            qn->uri ? JS_GetStringBytes(qn->uri) : "*",
-                            JS_GetStringBytes(qn->localName));
-            } else {
-                JSString *str = elt->xml_value;
-                size_t srclen = JSSTRING_LENGTH(str);
-                size_t dstlen = sizeof buf;
-
-                if (srclen >= sizeof buf / 6)
-                    srclen = sizeof buf / 6 - 1;
-                js_DeflateStringToBuffer(cx, JSSTRING_CHARS(str), srclen,
-                                         buf, &dstlen);
-            }
-#endif
-            GC_MARK(cx, elt, buf);
+        xml = vec[i];
+        if (xml) {
+            JS_SET_TRACING_INDEX(trc, "xml_vector", i);
+            JS_CallTracer(trc, xml, JSTRACE_XML);
         }
     }
 }
@@ -5102,10 +5020,9 @@ xml_mark_vector(JSContext *cx, JSXML **vec, uint32 len)
  * be native.  Therefore, xml_lookupProperty must return a valid JSProperty
  * pointer parameter via *propp to signify "property found".  Since the only
  * call to xml_lookupProperty is via OBJ_LOOKUP_PROPERTY, and then only from
- * js_FindXMLProperty (in this file), js_FindProperty (in jsobj.c, called from
- * jsinterp.c) or from JSOP_IN case in the interpreter, the only time we add a
- * JSScopeProperty here is when an unqualified name or XML name is being
- * accessed or when "name in xml" is called.
+ * js_FindProperty (in jsobj.c, called from jsinterp.c) or from JSOP_IN case
+ * in the interpreter, the only time we add a JSScopeProperty here is when an
+ * unqualified name is being accessed or when "name in xml" is called.
  *
  * This scope property keeps the JSOP_NAME code in js_Interpret happy by
  * giving it an sprop with (getter, setter) == (GetProperty, PutProperty).
@@ -5121,17 +5038,35 @@ xml_mark_vector(JSContext *cx, JSXML **vec, uint32 len)
  * property, we assume that it represents the result of GetProperty setter
  * hiding the function and use an extra prototype chain lookup to recover it.
  * For a proper solution see bug 355257.
- */
+*/
 static JSBool
 xml_lookupProperty(JSContext *cx, JSObject *obj, jsid id, JSObject **objp,
                    JSProperty **propp)
 {
+    jsval v;
+    JSBool found;
+    JSXML *xml;
+    uint32 i;
+    JSXMLQName *qn;
+    jsid funid;
     JSScopeProperty *sprop;
 
-    if (!HasProperty(cx, obj, ID_TO_VALUE(id), objp, propp))
-        return JS_FALSE;
-
-    if (*propp == FOUND_XML_PROPERTY) {
+    v = ID_TO_VALUE(id);
+    xml = (JSXML *) JS_GetPrivate(cx, obj);
+    if (js_IdIsIndex(v, &i)) {
+        found = HasIndexedProperty(xml, i);
+    } else {
+        qn = ToXMLName(cx, v, &funid);
+        if (!qn)
+            return JS_FALSE;
+        if (funid)
+            return js_LookupProperty(cx, obj, funid, objp, propp);
+        found = HasNamedProperty(xml, qn);
+    }
+    if (!found) {
+        *objp = NULL;
+        *propp = NULL;
+    } else {
         sprop = js_AddNativeProperty(cx, obj, id, GetProperty, PutProperty,
                                      SPROP_INVALID_SLOT, JSPROP_ENUMERATE,
                                      0, 0);
@@ -5185,17 +5120,10 @@ static JSBool
 FoundProperty(JSContext *cx, JSObject *obj, jsid id, JSProperty *prop,
               JSBool *foundp)
 {
-    JSObject *pobj;
+    if (!prop)
+        return HasProperty(cx, obj, ID_TO_VALUE(id), foundp);
 
-    if (prop) {
-        *foundp = JS_TRUE;
-    } else {
-        if (!HasProperty(cx, obj, ID_TO_VALUE(id), &pobj, &prop))
-            return JS_FALSE;
-        if (prop)
-            DROP_PROPERTY(cx, pobj, prop);
-        *foundp = (prop != NULL);
-    }
+    *foundp = JS_TRUE;
     return JS_TRUE;
 }
 
@@ -5229,23 +5157,47 @@ xml_setAttributes(JSContext *cx, JSObject *obj, jsid id, JSProperty *prop,
 static JSBool
 xml_deleteProperty(JSContext *cx, JSObject *obj, jsid id, jsval *rval)
 {
-    /*
-     * If this object has its own (mutable) scope, and if id isn't an index,
-     * then we may have added a property to the scope in xml_lookupProperty
-     * for it to return to mean "found" and to provide a handle for access
-     * operations to call the property's getter or setter.  The property also
-     * helps speed up unqualified accesses via the property cache, avoiding
-     * what amount to two HasProperty searches.
-     *
-     * But now it's time to remove any such property, to purge the property
-     * cache and remove the scope entry.
-     */
-    if (OBJ_SCOPE(obj)->object == obj && !JSID_IS_INT(id)) {
-        if (!js_DeleteProperty(cx, obj, id, rval))
+    JSXML *xml;
+    jsval idval;
+    uint32 index;
+    JSXMLQName *nameqn;
+    jsid funid;
+
+    idval = ID_TO_VALUE(id);
+    xml = (JSXML *) JS_GetPrivate(cx, obj);
+    if (js_IdIsIndex(idval, &index)) {
+        if (xml->xml_class != JSXML_CLASS_LIST) {
+            /* See NOTE in spec: this variation is reserved for future use. */
+            ReportBadXMLName(cx, id);
             return JS_FALSE;
+        }
+
+        /* ECMA-357 9.2.1.3. */
+        DeleteListElement(cx, xml, index);
+    } else {
+        nameqn = ToXMLName(cx, idval, &funid);
+        if (!nameqn)
+            return JS_FALSE;
+        if (funid)
+            return js_DeleteProperty(cx, obj, funid, rval);
+
+        DeleteNamedProperty(cx, xml, nameqn,
+                            OBJ_GET_CLASS(cx, nameqn->object) ==
+                            &js_AttributeNameClass);
     }
 
-    return DeleteProperty(cx, obj, ID_TO_VALUE(id), rval);
+    /*
+     * If this object has its own (mutable) scope,  then we may have added a
+     * property to the scope in xml_lookupProperty for it to return to mean
+     * "found" and to provide a handle for access operations to call the
+     * property's getter or setter. But now it's time to remove any such
+     * property, to purge the property cache and remove the scope entry.
+     */
+    if (OBJ_SCOPE(obj)->object == obj && !js_DeleteProperty(cx, obj, id, rval))
+        return JS_FALSE;
+
+    *rval = JSVAL_TRUE;
+    return JS_TRUE;
 }
 
 static JSBool
@@ -5295,7 +5247,7 @@ xml_enumerate(JSContext *cx, JSObject *obj, JSIterateOp enum_op,
         break;
 
       case JSENUMERATE_NEXT:
-        cursor = JSVAL_TO_PRIVATE(*statep);
+        cursor = (JSXMLArrayCursor *) JSVAL_TO_PRIVATE(*statep);
         if (cursor && cursor->array && (index = cursor->index) < length) {
             *idp = INT_TO_JSID(index);
             cursor->index = index + 1;
@@ -5304,7 +5256,7 @@ xml_enumerate(JSContext *cx, JSObject *obj, JSIterateOp enum_op,
         /* FALL THROUGH */
 
       case JSENUMERATE_DESTROY:
-        cursor = JSVAL_TO_PRIVATE(*statep);
+        cursor = (JSXMLArrayCursor *) JSVAL_TO_PRIVATE(*statep);
         if (cursor) {
             XMLArrayCursorFinish(cursor);
             JS_free(cx, cursor);
@@ -5321,14 +5273,14 @@ xml_hasInstance(JSContext *cx, JSObject *obj, jsval v, JSBool *bp)
     return JS_TRUE;
 }
 
-static uint32
-xml_mark(JSContext *cx, JSObject *obj, void *arg)
+static void
+xml_trace(JSTracer *trc, JSObject *obj)
 {
     JSXML *xml;
 
-    xml = (JSXML *) JS_GetPrivate(cx, obj);
-    GC_MARK(cx, xml, "private");
-    return js_Mark(cx, obj, NULL);
+    xml = (JSXML *) JS_GetPrivate(trc->context, obj);
+    if (xml)
+        JS_CALL_TRACER(trc, xml, JSTRACE_XML, "private");
 }
 
 static void
@@ -5431,7 +5383,7 @@ xml_enumerateValues(JSContext *cx, JSObject *obj, JSIterateOp enum_op,
         break;
 
       case JSENUMERATE_NEXT:
-        cursor = JSVAL_TO_PRIVATE(*statep);
+        cursor = (JSXMLArrayCursor *) JSVAL_TO_PRIVATE(*statep);
         if (cursor && cursor->array && (index = cursor->index) < length) {
             while (!(kid = XMLARRAY_MEMBER(&xml->xml_kids, index, JSXML))) {
                 if (++index == length)
@@ -5449,7 +5401,7 @@ xml_enumerateValues(JSContext *cx, JSObject *obj, JSIterateOp enum_op,
         /* FALL THROUGH */
 
       case JSENUMERATE_DESTROY:
-        cursor = JSVAL_TO_PRIVATE(*statep);
+        cursor = (JSXMLArrayCursor *) JSVAL_TO_PRIVATE(*statep);
         if (cursor) {
       destroy:
             XMLArrayCursorFinish(cursor);
@@ -5590,7 +5542,7 @@ JS_FRIEND_DATA(JSXMLObjectOps) js_XMLObjectOps = {
     NULL,                       NULL,
     NULL,                       xml_hasInstance,
     js_SetProtoOrParent,        js_SetProtoOrParent,
-    xml_mark,                   xml_clear,
+    js_TraceObject,             xml_clear,
     NULL,                       NULL },
     xml_getMethod,              xml_setMethod,
     xml_enumerateValues,        xml_equality,
@@ -5605,22 +5557,39 @@ xml_getObjectOps(JSContext *cx, JSClass *clasp)
 
 JS_FRIEND_DATA(JSClass) js_XMLClass = {
     js_XML_str,
-    JSCLASS_HAS_PRIVATE | JSCLASS_HAS_CACHED_PROTO(JSProto_XML),
+    JSCLASS_HAS_PRIVATE | JSCLASS_MARK_IS_TRACE |
+    JSCLASS_HAS_CACHED_PROTO(JSProto_XML),
     JS_PropertyStub,   JS_PropertyStub,   JS_PropertyStub,   JS_PropertyStub,
     JS_EnumerateStub,  JS_ResolveStub,    JS_ConvertStub,    xml_finalize,
     xml_getObjectOps,  NULL,              NULL,              NULL,
-    NULL,              NULL,              NULL,              NULL
+    NULL,              NULL,              JS_CLASS_TRACE(xml_trace), NULL
 };
 
+static JSObject *
+CallConstructorFunction(JSContext *cx, JSObject *obj, JSClass *clasp,
+                        uintN argc, jsval *argv)
+{
+    JSObject *tmp;
+    jsval rval;
+
+    while ((tmp = OBJ_GET_PARENT(cx, obj)) != NULL)
+        obj = tmp;
+    if (!JS_CallFunctionName(cx, obj, clasp->name, argc, argv, &rval))
+        return NULL;
+    JS_ASSERT(!JSVAL_IS_PRIMITIVE(rval));
+    return JSVAL_TO_OBJECT(rval);
+}
+
 static JSXML *
-StartNonListXMLMethod(JSContext *cx, JSObject **objp, jsval *argv)
+StartNonListXMLMethod(JSContext *cx, jsval *vp, JSObject **objp)
 {
     JSXML *xml;
     JSFunction *fun;
 
-    JS_ASSERT(VALUE_IS_FUNCTION(cx, argv[-2]));
+    JS_ASSERT(VALUE_IS_FUNCTION(cx, *vp));
 
-    xml = (JSXML *) JS_GetInstancePrivate(cx, *objp, &js_XMLClass, argv);
+    *objp = JS_THIS_OBJECT(cx, vp);
+    xml = (JSXML *) JS_GetInstancePrivate(cx, *objp, &js_XMLClass, vp + 2);
     if (!xml || xml->xml_class != JSXML_CLASS_LIST)
         return xml;
 
@@ -5630,12 +5599,12 @@ StartNonListXMLMethod(JSContext *cx, JSObject **objp, jsval *argv)
             *objp = js_GetXMLObject(cx, xml);
             if (!*objp)
                 return NULL;
-            argv[-1] = OBJECT_TO_JSVAL(*objp);
+            vp[1] = OBJECT_TO_JSVAL(*objp);
             return xml;
         }
     }
 
-    fun = (JSFunction *) JS_GetPrivate(cx, JSVAL_TO_OBJECT(argv[-2]));
+    fun = (JSFunction *) OBJ_GET_PRIVATE(cx, JSVAL_TO_OBJECT(*vp));
     if (fun) {
         char numBuf[12];
         JS_snprintf(numBuf, sizeof numBuf, "%u", xml->xml_kids.length);
@@ -5646,56 +5615,53 @@ StartNonListXMLMethod(JSContext *cx, JSObject **objp, jsval *argv)
     return NULL;
 }
 
+/* Beware: these two are not bracketed by JS_BEGIN/END_MACRO. */
 #define XML_METHOD_PROLOG                                                     \
-    JS_BEGIN_MACRO                                                            \
-        xml = (JSXML *) JS_GetInstancePrivate(cx, obj, &js_XMLClass, argv);   \
-        if (!xml)                                                             \
-            return JS_FALSE;                                                  \
-    JS_END_MACRO
+    JSObject *obj = JS_THIS_OBJECT(cx, vp);                                   \
+    JSXML *xml = (JSXML *)JS_GetInstancePrivate(cx, obj, &js_XMLClass, vp+2); \
+    if (!xml)                                                                 \
+        return JS_FALSE
 
 #define NON_LIST_XML_METHOD_PROLOG                                            \
-    JS_BEGIN_MACRO                                                            \
-        xml = StartNonListXMLMethod(cx, &obj, argv);                          \
-        if (!xml)                                                             \
-            return JS_FALSE;                                                  \
-        JS_ASSERT(xml->xml_class != JSXML_CLASS_LIST);                        \
-    JS_END_MACRO
+    JSObject *obj;                                                            \
+    JSXML *xml = StartNonListXMLMethod(cx, vp, &obj);                         \
+    if (!xml)                                                                 \
+        return JS_FALSE;                                                      \
+    JS_ASSERT(xml->xml_class != JSXML_CLASS_LIST)
 
 static JSBool
-xml_addNamespace(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-                 jsval *rval)
+xml_addNamespace(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml;
+    JSObject *nsobj;
     JSXMLNamespace *ns;
 
     NON_LIST_XML_METHOD_PROLOG;
     if (xml->xml_class != JSXML_CLASS_ELEMENT)
-        goto done;
+        return JS_TRUE;
     xml = CHECK_COPY_ON_WRITE(cx, xml, obj);
     if (!xml)
         return JS_FALSE;
-    
-    if (!NamespaceHelper(cx, NULL, 1, argv, rval))
+
+    nsobj = CallConstructorFunction(cx, obj, &js_NamespaceClass.base, 1,
+                                    vp + 2);
+    if (!nsobj)
         return JS_FALSE;
-    JS_ASSERT(!JSVAL_IS_PRIMITIVE(*rval));
-    
-    ns = (JSXMLNamespace *) JS_GetPrivate(cx, JSVAL_TO_OBJECT(*rval));
+    vp[2] = OBJECT_TO_JSVAL(nsobj);
+
+    ns = (JSXMLNamespace *) JS_GetPrivate(cx, nsobj);
     if (!AddInScopeNamespace(cx, xml, ns))
         return JS_FALSE;
     ns->declared = JS_TRUE;
-
-  done:
-    *rval = OBJECT_TO_JSVAL(obj);
+    *vp = OBJECT_TO_JSVAL(obj);
     return JS_TRUE;
 }
 
 static JSBool
-xml_appendChild(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-                jsval *rval)
+xml_appendChild(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml, *vxml;
     jsval name, v;
     JSObject *vobj;
+    JSXML *vxml;
 
     NON_LIST_XML_METHOD_PROLOG;
     xml = CHECK_COPY_ON_WRITE(cx, xml, obj);
@@ -5716,31 +5682,30 @@ xml_appendChild(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
 
     if (!IndexToIdVal(cx, vxml->xml_kids.length, &name))
         return JS_FALSE;
-    if (!PutProperty(cx, JSVAL_TO_OBJECT(v), name, &argv[0]))
+    if (!PutProperty(cx, JSVAL_TO_OBJECT(v), name, &vp[2]))
         return JS_FALSE;
 
-    *rval = OBJECT_TO_JSVAL(obj);
+    *vp = OBJECT_TO_JSVAL(obj);
     return JS_TRUE;
 }
 
 /* XML and XMLList */
 static JSBool
-xml_attribute(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-              jsval *rval)
+xml_attribute(JSContext *cx, uintN argc, jsval *vp)
 {
     JSXMLQName *qn;
 
-    qn = ToAttributeName(cx, argv[0]);
+    qn = ToAttributeName(cx, vp[2]);
     if (!qn)
         return JS_FALSE;
-    argv[0] = OBJECT_TO_JSVAL(qn->object);      /* local root */
-    return GetProperty(cx, obj, argv[0], rval);
+    vp[2] = OBJECT_TO_JSVAL(qn->object);      /* local root */
+
+    return GetProperty(cx, JS_THIS_OBJECT(cx, vp), vp[2], vp);
 }
 
 /* XML and XMLList */
 static JSBool
-xml_attributes(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-               jsval *rval)
+xml_attributes(JSContext *cx, uintN argc, jsval *vp)
 {
     jsval name;
     JSXMLQName *qn;
@@ -5753,7 +5718,7 @@ xml_attributes(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
         return JS_FALSE;
     name = OBJECT_TO_JSVAL(qn->object);
     JS_PUSH_SINGLE_TEMP_ROOT(cx, name, &tvr);
-    ok = GetProperty(cx, obj, name, rval);
+    ok = GetProperty(cx, JS_THIS_OBJECT(cx, vp), name, vp);
     JS_POP_TEMP_ROOT(cx, &tvr);
     return ok;
 }
@@ -5807,18 +5772,18 @@ xml_child_helper(JSContext *cx, JSObject *obj, JSXML *xml, jsval name,
 
 /* XML and XMLList */
 static JSBool
-xml_child(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
+xml_child(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml, *list, *kid, *vxml;
-    JSXMLArrayCursor cursor;
     jsval name, v;
+    JSXML *list, *kid, *vxml;
+    JSXMLArrayCursor cursor;
     JSObject *kidobj;
 
     XML_METHOD_PROLOG;
-    name = argv[0];
+    name = vp[2];
     if (xml->xml_class == JSXML_CLASS_LIST) {
         /* ECMA-357 13.5.4.4 */
-        list = xml_list_helper(cx, xml, rval);
+        list = xml_list_helper(cx, xml, vp);
         if (!list)
             return JS_FALSE;
 
@@ -5846,24 +5811,23 @@ xml_child(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
     }
 
     /* ECMA-357 Edition 2 13.3.4.6 (note 13.3, not 13.4 as in Edition 1). */
-    if (!xml_child_helper(cx, obj, xml, name, rval))
+    if (!xml_child_helper(cx, obj, xml, name, vp))
         return JS_FALSE;
-    if (JSVAL_IS_VOID(*rval) && !xml_list_helper(cx, xml, rval))
+    if (JSVAL_IS_VOID(*vp) && !xml_list_helper(cx, xml, vp))
         return JS_FALSE;
     return JS_TRUE;
 }
 
 static JSBool
-xml_childIndex(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-               jsval *rval)
+xml_childIndex(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml, *parent;
+    JSXML *parent;
     uint32 i, n;
 
     NON_LIST_XML_METHOD_PROLOG;
     parent = xml->parent;
     if (!parent || xml->xml_class == JSXML_CLASS_ATTRIBUTE) {
-        *rval = DOUBLE_TO_JSVAL(cx->runtime->jsNaN);
+        *vp = DOUBLE_TO_JSVAL(cx->runtime->jsNaN);
         return JS_TRUE;
     }
     for (i = 0, n = JSXML_LENGTH(parent); i < n; i++) {
@@ -5871,33 +5835,30 @@ xml_childIndex(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
             break;
     }
     JS_ASSERT(i < n);
-    return js_NewNumberValue(cx, i, rval);
+    return js_NewNumberValue(cx, i, vp);
 }
 
 /* XML and XMLList */
 static JSBool
-xml_children(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-             jsval *rval)
+xml_children(JSContext *cx, uintN argc, jsval *vp)
 {
     jsval name;
 
     name = ATOM_KEY(cx->runtime->atomState.starAtom);
-    return GetProperty(cx, obj, name, rval);
+    return GetProperty(cx, JS_THIS_OBJECT(cx, vp), name, vp);
 }
 
 /* XML and XMLList */
 static JSBool
-xml_comments(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-             jsval *rval)
+xml_comments_helper(JSContext *cx, JSObject *obj, JSXML *xml, jsval *vp)
 {
-    JSXML *xml, *list, *kid, *vxml;
+    JSXML *list, *kid, *vxml;
     JSBool ok;
     uint32 i, n;
     JSObject *kidobj;
     jsval v;
 
-    XML_METHOD_PROLOG;
-    list = xml_list_helper(cx, xml, rval);
+    list = xml_list_helper(cx, xml, vp);
     if (!list)
         return JS_FALSE;
 
@@ -5913,7 +5874,7 @@ xml_comments(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
                     break;
                 kidobj = js_GetXMLObject(cx, kid);
                 if (kidobj) {
-                    ok = xml_comments(cx, kidobj, argc, argv, &v);
+                    ok = xml_comments_helper(cx, kidobj, kid, &v);
                 } else {
                     ok = JS_FALSE;
                     v = JSVAL_NULL;
@@ -5944,19 +5905,25 @@ xml_comments(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
     return ok;
 }
 
+static JSBool
+xml_comments(JSContext *cx, uintN argc, jsval *vp)
+{
+    XML_METHOD_PROLOG;
+    return xml_comments_helper(cx, obj, xml, vp);
+}
+
 /* XML and XMLList */
 static JSBool
-xml_contains(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-             jsval *rval)
+xml_contains(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml, *kid;
     jsval value;
     JSBool eq;
     JSXMLArrayCursor cursor;
+    JSXML *kid;
     JSObject *kidobj;
 
     XML_METHOD_PROLOG;
-    value = argv[0];
+    value = vp[2];
     if (xml->xml_class == JSXML_CLASS_LIST) {
         eq = JS_FALSE;
         XMLArrayCursorInit(&cursor, &xml->xml_kids);
@@ -5974,68 +5941,55 @@ xml_contains(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
         if (!xml_equality(cx, obj, value, &eq))
             return JS_FALSE;
     }
-    *rval = BOOLEAN_TO_JSVAL(eq);
+    *vp = BOOLEAN_TO_JSVAL(eq);
     return JS_TRUE;
 }
 
 /* XML and XMLList */
 static JSBool
-xml_copy(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
+xml_copy(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml, *copy;
+    JSXML *copy;
 
     XML_METHOD_PROLOG;
     copy = DeepCopy(cx, xml, NULL, 0);
     if (!copy)
         return JS_FALSE;
-    *rval = OBJECT_TO_JSVAL(copy->object);
+    *vp = OBJECT_TO_JSVAL(copy->object);
     return JS_TRUE;
 }
 
 /* XML and XMLList */
 static JSBool
-xml_descendants(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-                jsval *rval)
+xml_descendants(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml, *list;
     jsval name;
+    JSXML *list;
 
     XML_METHOD_PROLOG;
-    name = (argc == 0) ? ATOM_KEY(cx->runtime->atomState.starAtom) : argv[0];
+    name = (argc == 0) ? ATOM_KEY(cx->runtime->atomState.starAtom) : vp[2];
     list = Descendants(cx, xml, name);
     if (!list)
         return JS_FALSE;
-    *rval = OBJECT_TO_JSVAL(list->object);
+    *vp = OBJECT_TO_JSVAL(list->object);
     return JS_TRUE;
 }
 
 /* XML and XMLList */
 static JSBool
-xml_elements(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-             jsval *rval)
+xml_elements_helper(JSContext *cx, JSObject *obj, JSXML *xml,
+                    JSXMLQName *nameqn, jsval *vp)
 {
-    JSXML *xml, *list, *kid, *vxml;
-    jsval name, v;
-    JSXMLQName *nameqn;
-    jsid funid;
+    JSXML *list, *kid, *vxml;
+    jsval v;
     JSBool ok;
     JSXMLArrayCursor cursor;
     JSObject *kidobj;
     uint32 i, n;
 
-    XML_METHOD_PROLOG;
-    name = (argc == 0) ? ATOM_KEY(cx->runtime->atomState.starAtom) : argv[0];
-    nameqn = ToXMLName(cx, name, &funid);
-    if (!nameqn)
-        return JS_FALSE;
-    if (argc)
-        argv[0] = OBJECT_TO_JSVAL(nameqn->object);
-
-    list = xml_list_helper(cx, xml, rval);
+    list = xml_list_helper(cx, xml, vp);
     if (!list)
         return JS_FALSE;
-    if (funid)
-        return JS_TRUE;
 
     list->xml_targetprop = nameqn;
     ok = JS_TRUE;
@@ -6050,7 +6004,7 @@ xml_elements(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
                     break;
                 kidobj = js_GetXMLObject(cx, kid);
                 if (kidobj) {
-                    ok = xml_elements(cx, kidobj, argc, argv, &v);
+                    ok = xml_elements_helper(cx, kidobj, kid, nameqn, &v);
                 } else {
                     ok = JS_FALSE;
                     v = JSVAL_NULL;
@@ -6082,36 +6036,54 @@ xml_elements(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
     return ok;
 }
 
-/* XML and XMLList */
 static JSBool
-xml_hasOwnProperty(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-                   jsval *rval)
+xml_elements(JSContext *cx, uintN argc, jsval *vp)
 {
     jsval name;
-    JSObject *pobj;
-    JSProperty *prop;
+    JSXMLQName *nameqn;
+    jsid funid;
 
-    if (!JS_InstanceOf(cx, obj, &js_XMLClass, argv))
-        return JS_FALSE;
+    XML_METHOD_PROLOG;
 
-    name = argv[0];
-    if (!HasProperty(cx, obj, name, &pobj, &prop))
+    name = (argc == 0) ? ATOM_KEY(cx->runtime->atomState.starAtom) : vp[2];
+    nameqn = ToXMLName(cx, name, &funid);
+    if (!nameqn)
         return JS_FALSE;
-    if (!prop) {
-        return js_HasOwnPropertyHelper(cx, obj, js_LookupProperty, argc, argv,
-                                       rval);
-    }
-    DROP_PROPERTY(cx, pobj, prop);
-    *rval = JSVAL_TRUE;
-    return JS_TRUE;
+    vp[2] = OBJECT_TO_JSVAL(nameqn->object);
+
+    if (funid)
+        return xml_list_helper(cx, xml, vp) != NULL;
+
+    return xml_elements_helper(cx, obj, xml, nameqn, vp);
 }
 
 /* XML and XMLList */
 static JSBool
-xml_hasComplexContent(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-                      jsval *rval)
+xml_hasOwnProperty(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml, *kid;
+    JSObject *obj;
+    jsval name;
+    JSBool found;
+
+    obj = JSVAL_TO_OBJECT(vp[1]);
+    if (!JS_InstanceOf(cx, obj, &js_XMLClass, vp + 2))
+        return JS_FALSE;
+
+    name = vp[2];
+    if (!HasProperty(cx, obj, name, &found))
+        return JS_FALSE;
+    if (found) {
+        *vp = JSVAL_TRUE;
+        return JS_TRUE;
+    }
+    return js_HasOwnPropertyHelper(cx, js_LookupProperty, vp);
+}
+
+/* XML and XMLList */
+static JSBool
+xml_hasComplexContent(JSContext *cx, uintN argc, jsval *vp)
+{
+    JSXML *kid;
     JSObject *kidobj;
     uint32 i, n;
 
@@ -6122,11 +6094,11 @@ again:
       case JSXML_CLASS_COMMENT:
       case JSXML_CLASS_PROCESSING_INSTRUCTION:
       case JSXML_CLASS_TEXT:
-        *rval = JSVAL_FALSE;
+        *vp = JSVAL_FALSE;
         break;
       case JSXML_CLASS_LIST:
         if (xml->xml_kids.length == 0) {
-            *rval = JSVAL_TRUE;
+            *vp = JSVAL_TRUE;
         } else if (xml->xml_kids.length == 1) {
             kid = XMLARRAY_MEMBER(&xml->xml_kids, 0, JSXML);
             if (kid) {
@@ -6140,11 +6112,11 @@ again:
         }
         /* FALL THROUGH */
       default:
-        *rval = JSVAL_FALSE;
+        *vp = JSVAL_FALSE;
         for (i = 0, n = xml->xml_kids.length; i < n; i++) {
             kid = XMLARRAY_MEMBER(&xml->xml_kids, i, JSXML);
             if (kid && kid->xml_class == JSXML_CLASS_ELEMENT) {
-                *rval = JSVAL_TRUE;
+                *vp = JSVAL_TRUE;
                 break;
             }
         }
@@ -6155,13 +6127,10 @@ again:
 
 /* XML and XMLList */
 static JSBool
-xml_hasSimpleContent(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-                     jsval *rval)
+xml_hasSimpleContent(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml;
-
     XML_METHOD_PROLOG;
-    *rval = BOOLEAN_TO_JSVAL(HasSimpleContent(xml));
+    *vp = BOOLEAN_TO_JSVAL(HasSimpleContent(xml));
     return JS_TRUE;
 }
 
@@ -6172,16 +6141,15 @@ typedef struct JSTempRootedNSArray {
 } JSTempRootedNSArray;
 
 JS_STATIC_DLL_CALLBACK(void)
-mark_temp_ns_array(JSContext *cx, JSTempValueRooter *tvr)
+trace_temp_ns_array(JSTracer *trc, JSTempValueRooter *tvr)
 {
     JSTempRootedNSArray *tmp = (JSTempRootedNSArray *)tvr;
 
-    namespace_mark_vector(cx,
-                          (JSXMLNamespace **)tmp->array.vector,
-                          tmp->array.length);
-    XMLArrayCursorMark(cx, tmp->array.cursors);
-    if (JSVAL_IS_GCTHING(tmp->value))
-        GC_MARK(cx, JSVAL_TO_GCTHING(tmp->value), "temp_ns_array_value");
+    namespace_trace_vector(trc,
+                           (JSXMLNamespace **)tmp->array.vector,
+                           tmp->array.length);
+    XMLArrayCursorTrace(trc, tmp->array.cursors);
+    JS_CALL_VALUE_TRACER(trc, tmp->value, "temp_ns_array_value");
 }
 
 static void
@@ -6189,13 +6157,13 @@ InitTempNSArray(JSContext *cx, JSTempRootedNSArray *tmp)
 {
     XMLArrayInit(cx, &tmp->array, 0);
     tmp->value = JSVAL_NULL;
-    JS_PUSH_TEMP_ROOT_MARKER(cx, mark_temp_ns_array, &tmp->tvr);
+    JS_PUSH_TEMP_ROOT_TRACE(cx, trace_temp_ns_array, &tmp->tvr);
 }
 
 static void
 FinishTempNSArray(JSContext *cx, JSTempRootedNSArray *tmp)
 {
-    JS_ASSERT(tmp->tvr.u.marker == mark_temp_ns_array);
+    JS_ASSERT(tmp->tvr.u.trace == trace_temp_ns_array);
     JS_POP_TEMP_ROOT(cx, &tmp->tvr);
     XMLArrayFinish(cx, &tmp->array);
 }
@@ -6268,10 +6236,8 @@ FindInScopeNamespaces(JSContext *cx, JSXML *xml, JSXMLArray *nsarray)
 }
 
 static JSBool
-xml_inScopeNamespaces(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-                      jsval *rval)
+xml_inScopeNamespaces(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml;
     JSTempRootedNSArray namespaces;
     JSBool ok;
 
@@ -6279,24 +6245,23 @@ xml_inScopeNamespaces(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
 
     InitTempNSArray(cx, &namespaces);
     ok = FindInScopeNamespaces(cx, xml, &namespaces.array) &&
-         TempNSArrayToJSArray(cx, &namespaces, rval);
+         TempNSArrayToJSArray(cx, &namespaces, vp);
     FinishTempNSArray(cx, &namespaces);
     return ok;
 }
 
 static JSBool
-xml_insertChildAfter(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-                     jsval *rval)
+xml_insertChildAfter(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml, *kid;
     jsval arg;
+    JSXML *kid;
     uint32 i;
 
     NON_LIST_XML_METHOD_PROLOG;
     if (!JSXML_HAS_KIDS(xml))
         return JS_TRUE;
 
-    arg = argv[0];
+    arg = vp[2];
     if (JSVAL_IS_NULL(arg)) {
         kid = NULL;
         i = 0;
@@ -6313,25 +6278,24 @@ xml_insertChildAfter(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
     xml = CHECK_COPY_ON_WRITE(cx, xml, obj);
     if (!xml)
         return JS_FALSE;
-    if (!Insert(cx, xml, i, argv[1]))
+    if (!Insert(cx, xml, i, vp[3]))
         return JS_FALSE;
-    *rval = OBJECT_TO_JSVAL(obj);
+    *vp = OBJECT_TO_JSVAL(obj);
     return JS_TRUE;
 }
 
 static JSBool
-xml_insertChildBefore(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-                      jsval *rval)
+xml_insertChildBefore(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml, *kid;
     jsval arg;
+    JSXML *kid;
     uint32 i;
 
     NON_LIST_XML_METHOD_PROLOG;
     if (!JSXML_HAS_KIDS(xml))
         return JS_TRUE;
 
-    arg = argv[0];
+    arg = vp[2];
     if (JSVAL_IS_NULL(arg)) {
         kid = NULL;
         i = xml->xml_kids.length;
@@ -6347,62 +6311,54 @@ xml_insertChildBefore(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
     xml = CHECK_COPY_ON_WRITE(cx, xml, obj);
     if (!xml)
         return JS_FALSE;
-    if (!Insert(cx, xml, i, argv[1]))
+    if (!Insert(cx, xml, i, vp[3]))
         return JS_FALSE;
-    *rval = OBJECT_TO_JSVAL(obj);
+    *vp = OBJECT_TO_JSVAL(obj);
     return JS_TRUE;
 }
 
 /* XML and XMLList */
 static JSBool
-xml_length(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
+xml_length(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml;
-
     XML_METHOD_PROLOG;
     if (xml->xml_class != JSXML_CLASS_LIST) {
-        *rval = JSVAL_ONE;
+        *vp = JSVAL_ONE;
     } else {
-        if (!js_NewNumberValue(cx, xml->xml_kids.length, rval))
+        if (!js_NewNumberValue(cx, xml->xml_kids.length, vp))
             return JS_FALSE;
     }
     return JS_TRUE;
 }
 
 static JSBool
-xml_localName(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-              jsval *rval)
+xml_localName(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml;
-
     NON_LIST_XML_METHOD_PROLOG;
-    *rval = xml->name ? STRING_TO_JSVAL(xml->name->localName) : JSVAL_NULL;
+    *vp = xml->name ? STRING_TO_JSVAL(xml->name->localName) : JSVAL_NULL;
     return JS_TRUE;
 }
 
 static JSBool
-xml_name(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
+xml_name(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml;
     JSObject *nameobj;
 
     NON_LIST_XML_METHOD_PROLOG;
     if (!xml->name) {
-        *rval = JSVAL_NULL;
+        *vp = JSVAL_NULL;
     } else {
         nameobj = js_GetXMLQNameObject(cx, xml->name);
         if (!nameobj)
             return JS_FALSE;
-        *rval = OBJECT_TO_JSVAL(nameobj);
+        *vp = OBJECT_TO_JSVAL(nameobj);
     }
     return JS_TRUE;
 }
 
 static JSBool
-xml_namespace(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-              jsval *rval)
+xml_namespace(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml;
     JSString *prefix;
     JSTempRootedNSArray inScopeNSes;
     JSBool ok;
@@ -6412,17 +6368,17 @@ xml_namespace(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
 
     NON_LIST_XML_METHOD_PROLOG;
     if (argc == 0 && !JSXML_HAS_NAME(xml)) {
-        *rval = JSVAL_NULL;
+        *vp = JSVAL_NULL;
         return JS_TRUE;
     }
 
     if (argc == 0) {
         prefix = NULL;
     } else {
-        prefix = js_ValueToString(cx, argv[0]);
+        prefix = js_ValueToString(cx, vp[2]);
         if (!prefix)
             return JS_FALSE;
-        argv[0] = STRING_TO_JSVAL(prefix);      /* local root */
+        vp[2] = STRING_TO_JSVAL(prefix);      /* local root */
     }
 
     /* After this point the control must flow through label out. */
@@ -6448,14 +6404,14 @@ xml_namespace(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
     }
 
     if (!ns) {
-        *rval = JSVAL_VOID;
+        *vp = JSVAL_VOID;
     } else {
         nsobj = js_GetXMLNamespaceObject(cx, ns);
         if (!nsobj) {
             ok = JS_FALSE;
             goto out;
         }
-        *rval = OBJECT_TO_JSVAL(nsobj);
+        *vp = OBJECT_TO_JSVAL(nsobj);
     }
 
   out:
@@ -6464,12 +6420,11 @@ xml_namespace(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
 }
 
 static JSBool
-xml_namespaceDeclarations(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-                          jsval *rval)
+xml_namespaceDeclarations(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml, *yml;
     JSBool ok;
     JSTempRootedNSArray ancestors, declared;
+    JSXML *yml;
     uint32 i, n;
     JSXMLNamespace *ns;
 
@@ -6509,7 +6464,7 @@ xml_namespaceDeclarations(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
         }
     }
 
-    ok = TempNSArrayToJSArray(cx, &declared, rval);
+    ok = TempNSArrayToJSArray(cx, &declared, vp);
 
 out:
     /* Finishing must be in reverse order of initialization to follow LIFO. */
@@ -6521,7 +6476,7 @@ out:
 static const char js_attribute_str[] = "attribute";
 static const char js_text_str[]      = "text";
 
-/* Exported to jsgc.c #ifdef GC_MARK_DEBUG. */
+/* Exported to jsgc.c #ifdef DEBUG. */
 const char *js_xml_class_str[] = {
     "list",
     "element",
@@ -6532,62 +6487,36 @@ const char *js_xml_class_str[] = {
 };
 
 static JSBool
-xml_nodeKind(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-             jsval *rval)
+xml_nodeKind(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml;
     JSString *str;
 
     NON_LIST_XML_METHOD_PROLOG;
     str = JS_InternString(cx, js_xml_class_str[xml->xml_class]);
     if (!str)
         return JS_FALSE;
-    *rval = STRING_TO_JSVAL(str);
+    *vp = STRING_TO_JSVAL(str);
     return JS_TRUE;
 }
 
-static JSBool
-NormalizingDelete(JSContext *cx, JSObject *obj, JSXML *xml, jsval id)
+static void
+NormalizingDelete(JSContext *cx, JSXML *xml, uint32 index)
 {
-    jsval junk;
-
     if (xml->xml_class == JSXML_CLASS_LIST)
-        return DeleteProperty(cx, obj, id, &junk);
-    return DeleteByIndex(cx, xml, id, &junk);
-}
-
-/*
- * Erratum? the testcase js/tests/e4x/XML/13.4.4.26.js wants all-whitespace
- * text between tags to be removed by normalize.
- */
-static JSBool
-IsXMLSpace(JSString *str)
-{
-    const jschar *cp, *end;
-
-    cp = JSSTRING_CHARS(str);
-    end = cp + JSSTRING_LENGTH(str);
-    while (cp < end) {
-        if (!JS_ISXMLSPACE(*cp))
-            return JS_FALSE;
-        ++cp;
-    }
-    return JS_TRUE;
+        DeleteListElement(cx, xml, index);
+    else
+        DeleteByIndex(cx, xml, index);
 }
 
 /* XML and XMLList */
 static JSBool
-xml_normalize(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-              jsval *rval)
+xml_normalize_helper(JSContext *cx, JSObject *obj, JSXML *xml)
 {
-    JSXML *xml, *kid, *kid2;
+    JSXML *kid, *kid2;
     uint32 i, n;
     JSObject *kidobj;
     JSString *str;
-    jsval junk;
 
-    XML_METHOD_PROLOG;
-    *rval = OBJECT_TO_JSVAL(obj);
     if (!JSXML_HAS_KIDS(xml))
         return JS_TRUE;
 
@@ -6601,7 +6530,7 @@ xml_normalize(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
             continue;
         if (kid->xml_class == JSXML_CLASS_ELEMENT) {
             kidobj = js_GetXMLObject(cx, kid);
-            if (!kidobj || !xml_normalize(cx, kidobj, argc, argv, &junk))
+            if (!kidobj || !xml_normalize_helper(cx, kidobj, kid))
                 return JS_FALSE;
         } else if (kid->xml_class == JSXML_CLASS_TEXT) {
             while (i + 1 < n &&
@@ -6610,14 +6539,12 @@ xml_normalize(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
                 str = js_ConcatStrings(cx, kid->xml_value, kid2->xml_value);
                 if (!str)
                     return JS_FALSE;
-                if (!NormalizingDelete(cx, obj, xml, INT_TO_JSVAL(i + 1)))
-                    return JS_FALSE;
+                NormalizingDelete(cx, xml, i + 1);
                 n = xml->xml_kids.length;
                 kid->xml_value = str;
             }
-            if (IS_EMPTY(kid->xml_value) || IsXMLSpace(kid->xml_value)) {
-                if (!NormalizingDelete(cx, obj, xml, INT_TO_JSVAL(i)))
-                    return JS_FALSE;
+            if (IS_EMPTY(kid->xml_value)) {
+                NormalizingDelete(cx, xml, i);
                 n = xml->xml_kids.length;
                 --i;
             }
@@ -6627,18 +6554,26 @@ xml_normalize(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
     return JS_TRUE;
 }
 
+static JSBool
+xml_normalize(JSContext *cx, uintN argc, jsval *vp)
+{
+    XML_METHOD_PROLOG;
+    *vp = OBJECT_TO_JSVAL(obj);
+    return xml_normalize_helper(cx, obj, xml);
+}
+
 /* XML and XMLList */
 static JSBool
-xml_parent(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
+xml_parent(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml, *parent, *kid;
+    JSXML *parent, *kid;
     uint32 i, n;
     JSObject *parentobj;
 
     XML_METHOD_PROLOG;
     parent = xml->parent;
     if (xml->xml_class == JSXML_CLASS_LIST) {
-        *rval = JSVAL_VOID;
+        *vp = JSVAL_VOID;
         n = xml->xml_kids.length;
         if (n == 0)
             return JS_TRUE;
@@ -6655,43 +6590,32 @@ xml_parent(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
     }
 
     if (!parent) {
-        *rval = JSVAL_NULL;
+        *vp = JSVAL_NULL;
         return JS_TRUE;
     }
 
     parentobj = js_GetXMLObject(cx, parent);
     if (!parentobj)
         return JS_FALSE;
-    *rval = OBJECT_TO_JSVAL(parentobj);
+    *vp = OBJECT_TO_JSVAL(parentobj);
     return JS_TRUE;
 }
 
 /* XML and XMLList */
 static JSBool
-xml_processingInstructions(JSContext *cx, JSObject *obj, uintN argc,
-                           jsval *argv, jsval *rval)
+xml_processingInstructions_helper(JSContext *cx, JSObject *obj, JSXML *xml,
+                                  JSXMLQName *nameqn, jsval *vp)
 {
-    JSXML *xml, *list, *kid, *vxml;
-    jsval name, v;
-    JSXMLQName *nameqn;
-    jsid funid;
+    JSXML *list, *kid, *vxml;
     JSBool ok;
     JSXMLArrayCursor cursor;
     JSObject *kidobj;
+    jsval v;
     uint32 i, n;
 
-    XML_METHOD_PROLOG;
-    name = (argc == 0) ? ATOM_KEY(cx->runtime->atomState.starAtom) : argv[0];
-    nameqn = ToXMLName(cx, name, &funid);
-    if (!nameqn)
-        return JS_FALSE;
-    argv[0] = OBJECT_TO_JSVAL(nameqn->object);
-
-    list = xml_list_helper(cx, xml, rval);
+    list = xml_list_helper(cx, xml, vp);
     if (!list)
         return JS_FALSE;
-    if (funid)
-        return JS_TRUE;
 
     list->xml_targetprop = nameqn;
     ok = JS_TRUE;
@@ -6706,7 +6630,8 @@ xml_processingInstructions(JSContext *cx, JSObject *obj, uintN argc,
                     break;
                 kidobj = js_GetXMLObject(cx, kid);
                 if (kidobj) {
-                    ok = xml_processingInstructions(cx, kidobj, argc, argv, &v);
+                    ok = xml_processingInstructions_helper(cx, kidobj, kid,
+                                                           nameqn, &v);
                 } else {
                     ok = JS_FALSE;
                     v = JSVAL_NULL;
@@ -6741,38 +6666,54 @@ xml_processingInstructions(JSContext *cx, JSObject *obj, uintN argc,
 }
 
 static JSBool
-xml_prependChild(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-                 jsval *rval)
+xml_processingInstructions(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml;
+    jsval name;
+    JSXMLQName *nameqn;
+    jsid funid;
 
+    XML_METHOD_PROLOG;
+
+    name = (argc == 0) ? ATOM_KEY(cx->runtime->atomState.starAtom) : vp[2];
+    nameqn = ToXMLName(cx, name, &funid);
+    if (!nameqn)
+        return JS_FALSE;
+    vp[2] = OBJECT_TO_JSVAL(nameqn->object);
+
+    if (funid)
+        return xml_list_helper(cx, xml, vp) != NULL;
+
+    return xml_processingInstructions_helper(cx, obj, xml, nameqn, vp);
+}
+
+static JSBool
+xml_prependChild(JSContext *cx, uintN argc, jsval *vp)
+{
     NON_LIST_XML_METHOD_PROLOG;
     xml = CHECK_COPY_ON_WRITE(cx, xml, obj);
     if (!xml)
         return JS_FALSE;
-    *rval = OBJECT_TO_JSVAL(obj);
-    return Insert(cx, xml, 0, argv[0]);
+    *vp = OBJECT_TO_JSVAL(obj);
+    return Insert(cx, xml, 0, vp[2]);
 }
 
 /* XML and XMLList */
 static JSBool
-xml_propertyIsEnumerable(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-                         jsval *rval)
+xml_propertyIsEnumerable(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml;
     jsval name;
     uint32 index;
 
     XML_METHOD_PROLOG;
-    name = argv[0];
-    *rval = JSVAL_FALSE;
+    name = vp[2];
+    *vp = JSVAL_FALSE;
     if (js_IdIsIndex(name, &index)) {
         if (xml->xml_class == JSXML_CLASS_LIST) {
             /* 13.5.4.18. */
-            *rval = BOOLEAN_TO_JSVAL(index < xml->xml_kids.length);
+            *vp = BOOLEAN_TO_JSVAL(index < xml->xml_kids.length);
         } else {
             /* 13.4.4.30. */
-            *rval = BOOLEAN_TO_JSVAL(index == 0);
+            *vp = BOOLEAN_TO_JSVAL(index == 0);
         }
     }
     return JS_TRUE;
@@ -6828,120 +6769,108 @@ xml_removeNamespace_helper(JSContext *cx, JSXML *xml, JSXMLNamespace *ns)
 }
 
 static JSBool
-xml_removeNamespace(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-                    jsval *rval)
+xml_removeNamespace(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml;
+    JSObject *nsobj;
     JSXMLNamespace *ns;
 
     NON_LIST_XML_METHOD_PROLOG;
+    *vp = OBJECT_TO_JSVAL(obj);
     if (xml->xml_class != JSXML_CLASS_ELEMENT)
-        goto done;
+        return JS_TRUE;
     xml = CHECK_COPY_ON_WRITE(cx, xml, obj);
     if (!xml)
         return JS_FALSE;
 
-    if (!NamespaceHelper(cx, NULL, 1, argv, rval))
+    nsobj = CallConstructorFunction(cx, obj, &js_NamespaceClass.base, 1, vp + 2);
+    if (!nsobj)
         return JS_FALSE;
-    JS_ASSERT(!JSVAL_IS_PRIMITIVE(*rval));
-    ns = (JSXMLNamespace *) JS_GetPrivate(cx, JSVAL_TO_OBJECT(*rval));
+    vp[2] = OBJECT_TO_JSVAL(nsobj);
+    ns = (JSXMLNamespace *) JS_GetPrivate(cx, nsobj);
 
     /* NOTE: remove ns from each ancestor if not used by that ancestor. */
-    if (!xml_removeNamespace_helper(cx, xml, ns))
-        return JS_FALSE;
-  done:
-    *rval = OBJECT_TO_JSVAL(obj);
-    return JS_TRUE;
+    return xml_removeNamespace_helper(cx, xml, ns);
 }
 
 static JSBool
-xml_replace(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
+xml_replace(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml, *vxml, *kid;
-    jsval value, id, junk;
-    uint32 index;
+    jsval name, value;
+    JSXML *vxml, *kid;
+    uint32 index, matchIndex;
+    JSObject *nameobj;
     JSXMLQName *nameqn;
 
     NON_LIST_XML_METHOD_PROLOG;
-    *rval = OBJECT_TO_JSVAL(obj);
+    *vp = OBJECT_TO_JSVAL(obj);
     if (xml->xml_class != JSXML_CLASS_ELEMENT)
-        goto done;
+        return JS_TRUE;
 
-    value = argv[1];
+    value = vp[3];
     vxml = VALUE_IS_XML(cx, value)
            ? (JSXML *) JS_GetPrivate(cx, JSVAL_TO_OBJECT(value))
            : NULL;
     if (!vxml) {
-        if (!JS_ConvertValue(cx, value, JSTYPE_STRING, &argv[1]))
+        if (!JS_ConvertValue(cx, value, JSTYPE_STRING, &vp[3]))
             return JS_FALSE;
-        value = argv[1];
+        value = vp[3];
     } else {
         vxml = DeepCopy(cx, vxml, NULL, 0);
         if (!vxml)
             return JS_FALSE;
-        value = argv[1] = OBJECT_TO_JSVAL(vxml->object);
+        value = vp[3] = OBJECT_TO_JSVAL(vxml->object);
     }
 
     xml = CHECK_COPY_ON_WRITE(cx, xml, obj);
     if (!xml)
         return JS_FALSE;
 
-    id = argv[0];
-    if (!js_IdIsIndex(id, &index)) {
-        /*
-         * Call function QName per spec, not ToXMLName, to avoid attribute
-         * names.
-         */
-        if (!QNameHelper(cx, NULL, &js_QNameClass.base, 1, argv, rval))
-            return JS_FALSE;
-        JS_ASSERT(!JSVAL_IS_PRIMITIVE(*rval));
-        nameqn = (JSXMLQName *) JS_GetPrivate(cx, JSVAL_TO_OBJECT(*rval));
-        
-        id = JSVAL_VOID;
-        index = xml->xml_kids.length;
-        while (index != 0) {
-            --index;
-            kid = XMLARRAY_MEMBER(&xml->xml_kids, index, JSXML);
-            if (kid && MatchElemName(nameqn, kid)) {
-                if (!JSVAL_IS_VOID(id) && !DeleteByIndex(cx, xml, id, &junk))
-                    return JS_FALSE;
-                if (!IndexToIdVal(cx, index, &id))
-                    return JS_FALSE;
-            }
+    name = vp[2];
+    if (js_IdIsIndex(name, &index))
+        return Replace(cx, xml, index, value);
+
+    /* Call function QName per spec, not ToXMLName, to avoid attribute names. */
+    nameobj = CallConstructorFunction(cx, obj, &js_QNameClass.base, 1, &name);
+    if (!nameobj)
+        return JS_FALSE;
+    vp[2] = OBJECT_TO_JSVAL(nameobj);
+    nameqn = (JSXMLQName *) JS_GetPrivate(cx, nameobj);
+
+    index = xml->xml_kids.length;
+    matchIndex = XML_NOT_FOUND;
+    while (index != 0) {
+        --index;
+        kid = XMLARRAY_MEMBER(&xml->xml_kids, index, JSXML);
+        if (kid && MatchElemName(nameqn, kid)) {
+            if (matchIndex != XML_NOT_FOUND)
+                DeleteByIndex(cx, xml, matchIndex);
+            matchIndex = index;
         }
-        if (JSVAL_IS_VOID(id))
-            goto done;
     }
 
-    if (!Replace(cx, xml, id, value))
-        return JS_FALSE;
-
-  done:
-    *rval = OBJECT_TO_JSVAL(obj);
-    return JS_TRUE;
+    return matchIndex == XML_NOT_FOUND || Replace(cx, xml, matchIndex, value);
 }
 
 static JSBool
-xml_setChildren(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-                jsval *rval)
+xml_setChildren(JSContext *cx, uintN argc, jsval *vp)
 {
-    if (!StartNonListXMLMethod(cx, &obj, argv))
+    JSObject *obj;
+
+    if (!StartNonListXMLMethod(cx, vp, &obj))
         return JS_FALSE;
 
     if (!PutProperty(cx, obj, ATOM_KEY(cx->runtime->atomState.starAtom),
-                     &argv[0])) {
+                     &vp[2])) {
         return JS_FALSE;
     }
 
-    *rval = OBJECT_TO_JSVAL(obj);
+    *vp = OBJECT_TO_JSVAL(obj);
     return JS_TRUE;
 }
 
 static JSBool
-xml_setLocalName(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-                 jsval *rval)
+xml_setLocalName(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml;
     jsval name;
     JSXMLQName *nameqn;
     JSString *namestr;
@@ -6950,15 +6879,15 @@ xml_setLocalName(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
     if (!JSXML_HAS_NAME(xml))
         return JS_TRUE;
 
-    name = argv[0];
+    name = vp[2];
     if (!JSVAL_IS_PRIMITIVE(name) &&
         OBJ_GET_CLASS(cx, JSVAL_TO_OBJECT(name)) == &js_QNameClass.base) {
         nameqn = (JSXMLQName *) JS_GetPrivate(cx, JSVAL_TO_OBJECT(name));
         namestr = nameqn->localName;
     } else {
-        if (!JS_ConvertValue(cx, name, JSTYPE_STRING, &argv[0]))
+        if (!JS_ConvertValue(cx, name, JSTYPE_STRING, &vp[2]))
             return JS_FALSE;
-        name = argv[0];
+        name = vp[2];
         namestr = JSVAL_TO_STRING(name);
     }
 
@@ -6970,12 +6899,12 @@ xml_setLocalName(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
 }
 
 static JSBool
-xml_setName(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
+xml_setName(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml, *nsowner;
     jsval name;
     JSXMLQName *nameqn;
     JSObject *nameobj;
+    JSXML *nsowner;
     JSXMLArray *nsarray;
     uint32 i, n;
     JSXMLNamespace *ns;
@@ -6984,12 +6913,12 @@ xml_setName(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
     if (!JSXML_HAS_NAME(xml))
         return JS_TRUE;
 
-    name = argv[0];
+    name = vp[2];
     if (!JSVAL_IS_PRIMITIVE(name) &&
         OBJ_GET_CLASS(cx, JSVAL_TO_OBJECT(name)) == &js_QNameClass.base &&
         !(nameqn = (JSXMLQName *) JS_GetPrivate(cx, JSVAL_TO_OBJECT(name)))
          ->uri) {
-        name = argv[0] = STRING_TO_JSVAL(nameqn->localName);
+        name = vp[2] = STRING_TO_JSVAL(nameqn->localName);
     }
 
     nameobj = js_ConstructObject(cx, &js_QNameClass.base, NULL, NULL, 1, &name);
@@ -7074,13 +7003,12 @@ xml_setName(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
 }
 
 static JSBool
-xml_setNamespace(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-                 jsval *rval)
+xml_setNamespace(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSXML *xml, *nsowner;
     JSObject *nsobj, *qnobj;
     JSXMLNamespace *ns;
     jsval qnargv[2];
+    JSXML *nsowner;
 
     NON_LIST_XML_METHOD_PROLOG;
     if (!JSXML_HAS_NAME(xml))
@@ -7090,13 +7018,14 @@ xml_setNamespace(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
     if (!xml || !js_GetXMLQNameObject(cx, xml->name))
         return JS_FALSE;
 
-    nsobj = js_ConstructObject(cx, &js_NamespaceClass.base, NULL, obj, 1, argv);
+    nsobj = js_ConstructObject(cx, &js_NamespaceClass.base, NULL, obj, 1,
+                               vp + 2);
     if (!nsobj)
         return JS_FALSE;
     ns = (JSXMLNamespace *) JS_GetPrivate(cx, nsobj);
     ns->declared = JS_TRUE;
 
-    qnargv[0] = argv[0] = OBJECT_TO_JSVAL(nsobj);
+    qnargv[0] = vp[2] = OBJECT_TO_JSVAL(nsobj);
     qnargv[1] = OBJECT_TO_JSVAL(xml->name->object);
     qnobj = js_ConstructObject(cx, &js_QNameClass.base, NULL, NULL, 2, qnargv);
     if (!qnobj)
@@ -7120,16 +7049,15 @@ xml_setNamespace(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
 
 /* XML and XMLList */
 static JSBool
-xml_text(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
+xml_text_helper(JSContext *cx, JSObject *obj, JSXML *xml, jsval *vp)
 {
-    JSXML *xml, *list, *kid, *vxml;
+    JSXML *list, *kid, *vxml;
     uint32 i, n;
     JSBool ok;
     JSObject *kidobj;
     jsval v;
 
-    XML_METHOD_PROLOG;
-    list = xml_list_helper(cx, xml, rval);
+    list = xml_list_helper(cx, xml, vp);
     if (!list)
         return JS_FALSE;
 
@@ -7143,7 +7071,7 @@ xml_text(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
                     break;
                 kidobj = js_GetXMLObject(cx, kid);
                 if (kidobj) {
-                    ok = xml_text(cx, kidobj, argc, argv, &v);
+                    ok = xml_text_helper(cx, kidobj, kid, &v);
                 } else {
                     ok = JS_FALSE;
                     v = JSVAL_NULL;
@@ -7168,18 +7096,11 @@ xml_text(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
     return JS_TRUE;
 }
 
-/* XML and XMLList */
 static JSBool
-xml_toXMLString(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-                jsval *rval)
+xml_text(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSString *str;
-
-    str = ToXMLString(cx, OBJECT_TO_JSVAL(obj), 0);
-    if (!str)
-        return JS_FALSE;
-    *rval = STRING_TO_JSVAL(str);
-    return JS_TRUE;
+    XML_METHOD_PROLOG;
+    return xml_text_helper(cx, obj, xml, vp);
 }
 
 /* XML and XMLList */
@@ -7196,10 +7117,11 @@ xml_toString_helper(JSContext *cx, JSXML *xml)
     }
 
     if (!HasSimpleContent(xml))
-        return ToXMLString(cx, OBJECT_TO_JSVAL(xml->object), 0);
+        return ToXMLString(cx, OBJECT_TO_JSVAL(xml->object));
 
     str = cx->runtime->emptyString;
-    js_EnterLocalRootScope(cx);
+    if (!js_EnterLocalRootScope(cx))
+        return NULL;
     XMLArrayCursorInit(&cursor, &xml->xml_kids);
     while ((kid = (JSXML *) XMLArrayCursorNext(&cursor)) != NULL) {
         if (kid->xml_class != JSXML_CLASS_COMMENT &&
@@ -7220,83 +7142,81 @@ xml_toString_helper(JSContext *cx, JSXML *xml)
 }
 
 static JSBool
-xml_toSource(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-             jsval *rval)
+xml_toString(JSContext *cx, uintN argc, jsval *vp)
 {
-    JSString *str;
-
-    str = ToXMLString(cx, OBJECT_TO_JSVAL(obj), TO_SOURCE_FLAG);
-    if (!str)
-        return JS_FALSE;
-    *rval = STRING_TO_JSVAL(str);
-    return JS_TRUE;
-}
-
-static JSBool
-xml_toString(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-             jsval *rval)
-{
-    JSXML *xml;
     JSString *str;
 
     XML_METHOD_PROLOG;
     str = xml_toString_helper(cx, xml);
     if (!str)
         return JS_FALSE;
-    *rval = STRING_TO_JSVAL(str);
+    *vp = STRING_TO_JSVAL(str);
     return JS_TRUE;
 }
 
 /* XML and XMLList */
 static JSBool
-xml_valueOf(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
+xml_toXMLString(JSContext *cx, uintN argc, jsval *vp)
 {
-    *rval = OBJECT_TO_JSVAL(obj);
+    JSString *str;
+
+    str = ToXMLString(cx, vp[1]);
+    if (!str)
+        return JS_FALSE;
+    *vp = STRING_TO_JSVAL(str);
+    return JS_TRUE;
+}
+
+/* XML and XMLList */
+static JSBool
+xml_valueOf(JSContext *cx, uintN argc, jsval *vp)
+{
+    *vp = vp[1];
     return JS_TRUE;
 }
 
 static JSFunctionSpec xml_methods[] = {
-    {"addNamespace",          xml_addNamespace,          1,0,0},
-    {"appendChild",           xml_appendChild,           1,0,0},
-    {js_attribute_str,        xml_attribute,             1,0,0},
-    {"attributes",            xml_attributes,            0,0,0},
-    {"child",                 xml_child,                 1,0,0},
-    {"childIndex",            xml_childIndex,            0,0,0},
-    {"children",              xml_children,              0,0,0},
-    {"comments",              xml_comments,              0,0,0},
-    {"contains",              xml_contains,              1,0,0},
-    {"copy",                  xml_copy,                  0,0,0},
-    {"descendants",           xml_descendants,           1,0,0},
-    {"elements",              xml_elements,              1,0,0},
-    {"hasOwnProperty",        xml_hasOwnProperty,        1,0,0},
-    {"hasComplexContent",     xml_hasComplexContent,     1,0,0},
-    {"hasSimpleContent",      xml_hasSimpleContent,      1,0,0},
-    {"inScopeNamespaces",     xml_inScopeNamespaces,     0,0,0},
-    {"insertChildAfter",      xml_insertChildAfter,      2,0,0},
-    {"insertChildBefore",     xml_insertChildBefore,     2,0,0},
-    {js_length_str,           xml_length,                0,0,0},
-    {js_localName_str,        xml_localName,             0,0,0},
-    {js_name_str,             xml_name,                  0,0,0},
-    {js_namespace_str,        xml_namespace,             1,0,0},
-    {"namespaceDeclarations", xml_namespaceDeclarations, 0,0,0},
-    {"nodeKind",              xml_nodeKind,              0,0,0},
-    {"normalize",             xml_normalize,             0,0,0},
-    {js_xml_parent_str,       xml_parent,                0,0,0},
-    {"processingInstructions",xml_processingInstructions,1,0,0},
-    {"prependChild",          xml_prependChild,          1,0,0},
-    {"propertyIsEnumerable",  xml_propertyIsEnumerable,  1,0,0},
-    {"removeNamespace",       xml_removeNamespace,       1,0,0},
-    {"replace",               xml_replace,               2,0,0},
-    {"setChildren",           xml_setChildren,           1,0,0},
-    {"setLocalName",          xml_setLocalName,          1,0,0},
-    {"setName",               xml_setName,               1,0,0},
-    {"setNamespace",          xml_setNamespace,          1,0,0},
-    {js_text_str,             xml_text,                  0,0,0},
-    {js_toSource_str,         xml_toSource,              0,0,0},
-    {js_toString_str,         xml_toString,              0,0,0},
-    {js_toXMLString_str,      xml_toXMLString,           0,0,0},
-    {js_valueOf_str,          xml_valueOf,               0,0,0},
-    {0,0,0,0,0}
+    JS_FN("addNamespace",          xml_addNamespace,          1,1,0),
+    JS_FN("appendChild",           xml_appendChild,           1,1,0),
+    JS_FN(js_attribute_str,        xml_attribute,             1,1,0),
+    JS_FN("attributes",            xml_attributes,            0,0,0),
+    JS_FN("child",                 xml_child,                 1,1,0),
+    JS_FN("childIndex",            xml_childIndex,            0,0,0),
+    JS_FN("children",              xml_children,              0,0,0),
+    JS_FN("comments",              xml_comments,              0,0,0),
+    JS_FN("contains",              xml_contains,              1,1,0),
+    JS_FN("copy",                  xml_copy,                  0,0,0),
+    JS_FN("descendants",           xml_descendants,           0,1,0),
+    JS_FN("elements",              xml_elements,              0,1,0),
+    JS_FN("hasOwnProperty",        xml_hasOwnProperty,        1,1,0),
+    JS_FN("hasComplexContent",     xml_hasComplexContent,     1,1,0),
+    JS_FN("hasSimpleContent",      xml_hasSimpleContent,      1,1,0),
+    JS_FN("inScopeNamespaces",     xml_inScopeNamespaces,     0,0,0),
+    JS_FN("insertChildAfter",      xml_insertChildAfter,      2,2,0),
+    JS_FN("insertChildBefore",     xml_insertChildBefore,     2,2,0),
+    JS_FN(js_length_str,           xml_length,                0,0,0),
+    JS_FN(js_localName_str,        xml_localName,             0,0,0),
+    JS_FN(js_name_str,             xml_name,                  0,0,0),
+    JS_FN(js_namespace_str,        xml_namespace,             0,1,0),
+    JS_FN("namespaceDeclarations", xml_namespaceDeclarations, 0,0,0),
+    JS_FN("nodeKind",              xml_nodeKind,              0,0,0),
+    JS_FN("normalize",             xml_normalize,             0,0,0),
+    JS_FN(js_xml_parent_str,       xml_parent,                0,0,0),
+    JS_FN("processingInstructions",xml_processingInstructions,0,1,0),
+    JS_FN("prependChild",          xml_prependChild,          1,1,0),
+    JS_FN("propertyIsEnumerable",  xml_propertyIsEnumerable,  1,1,0),
+    JS_FN("removeNamespace",       xml_removeNamespace,       1,1,0),
+    JS_FN("replace",               xml_replace,               2,2,0),
+    JS_FN("setChildren",           xml_setChildren,           1,1,0),
+    JS_FN("setLocalName",          xml_setLocalName,          1,1,0),
+    JS_FN("setName",               xml_setName,               1,1,0),
+    JS_FN("setNamespace",          xml_setNamespace,          1,1,0),
+    JS_FN(js_text_str,             xml_text,                  0,0,0),
+    JS_FN(js_toString_str,         xml_toString,              0,0,0),
+    JS_FN(js_toXMLString_str,      xml_toXMLString,           0,0,0),
+    JS_FN(js_toSource_str,         xml_toXMLString,           0,0,0),
+    JS_FN(js_valueOf_str,          xml_valueOf,               0,0,0),
+    JS_FS_END
 };
 
 static JSBool
@@ -7338,26 +7258,26 @@ SetDefaultXMLSettings(JSContext *cx, JSObject *obj)
 }
 
 static JSBool
-xml_settings(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
+xml_settings(JSContext *cx, uintN argc, jsval *vp)
 {
     JSObject *settings;
 
     settings = JS_NewObject(cx, NULL, NULL, NULL);
     if (!settings)
         return JS_FALSE;
-    *rval = OBJECT_TO_JSVAL(settings);
-    return CopyXMLSettings(cx, obj, settings);
+    *vp = OBJECT_TO_JSVAL(settings);
+    return CopyXMLSettings(cx, JS_THIS_OBJECT(cx, vp), settings);
 }
 
 static JSBool
-xml_setSettings(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-                jsval *rval)
+xml_setSettings(JSContext *cx, uintN argc, jsval *vp)
 {
+    JSObject *obj, *settings;
     jsval v;
     JSBool ok;
-    JSObject *settings;
 
-    v = argv[0];
+    obj = JS_THIS_OBJECT(cx, vp);
+    v = vp[2];
     if (JSVAL_IS_NULL(v) || JSVAL_IS_VOID(v)) {
         cx->xmlSettingFlags = 0;
         ok = SetDefaultXMLSettings(cx, obj);
@@ -7374,23 +7294,22 @@ xml_setSettings(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
 }
 
 static JSBool
-xml_defaultSettings(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-                    jsval *rval)
+xml_defaultSettings(JSContext *cx, uintN argc, jsval *vp)
 {
     JSObject *settings;
 
     settings = JS_NewObject(cx, NULL, NULL, NULL);
     if (!settings)
         return JS_FALSE;
-    *rval = OBJECT_TO_JSVAL(settings);
+    *vp = OBJECT_TO_JSVAL(settings);
     return SetDefaultXMLSettings(cx, settings);
 }
 
 static JSFunctionSpec xml_static_methods[] = {
-    {"settings",         xml_settings,          0,0,0},
-    {"setSettings",      xml_setSettings,       1,0,0},
-    {"defaultSettings",  xml_defaultSettings,   0,0,0},
-    {0,0,0,0,0}
+    JS_FN("settings",         xml_settings,          0,0,0),
+    JS_FN("setSettings",      xml_setSettings,       1,1,0),
+    JS_FN("defaultSettings",  xml_defaultSettings,   0,0,0),
+    JS_FS_END
 };
 
 static JSBool
@@ -7467,7 +7386,7 @@ XMLList(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
 }
 
 #define JSXML_LIST_SIZE     (offsetof(JSXML, u) + sizeof(struct JSXMLListVar))
-#define JSXML_ELEMENT_SIZE  (offsetof(JSXML, u) + sizeof(struct JSXMLVar))
+#define JSXML_ELEMENT_SIZE  (offsetof(JSXML, u) + sizeof(struct JSXMLElemVar))
 #define JSXML_LEAF_SIZE     (offsetof(JSXML, u) + sizeof(JSString *))
 
 static size_t sizeof_JSXML[JSXML_CLASS_LIMIT] = {
@@ -7522,40 +7441,49 @@ js_NewXML(JSContext *cx, JSXMLClass xml_class)
 }
 
 void
-js_MarkXML(JSContext *cx, JSXML *xml)
+js_TraceXML(JSTracer *trc, JSXML *xml)
 {
-    GC_MARK(cx, xml->object, "object");
-    GC_MARK(cx, xml->name, "name");
-    GC_MARK(cx, xml->parent, "xml_parent");
+    if (xml->object)
+        JS_CALL_OBJECT_TRACER(trc, xml->object, "object");
+    if (xml->name)
+        JS_CALL_TRACER(trc, xml->name, JSTRACE_QNAME, "name");
+    if (xml->parent)
+        JS_CALL_TRACER(trc, xml->parent, JSTRACE_XML, "xml_parent");
 
     if (JSXML_HAS_VALUE(xml)) {
-        GC_MARK(cx, xml->xml_value, "value");
+        if (xml->xml_value)
+            JS_CALL_STRING_TRACER(trc, xml->xml_value, "value");
         return;
     }
 
-    xml_mark_vector(cx,
-                    (JSXML **) xml->xml_kids.vector,
-                    xml->xml_kids.length);
-    XMLArrayCursorMark(cx, xml->xml_kids.cursors);
-    XMLArrayTrim(&xml->xml_kids);
+    xml_trace_vector(trc,
+                        (JSXML **) xml->xml_kids.vector,
+                        xml->xml_kids.length);
+    XMLArrayCursorTrace(trc, xml->xml_kids.cursors);
+    if (IS_GC_MARKING_TRACER(trc))
+        XMLArrayTrim(&xml->xml_kids);
 
     if (xml->xml_class == JSXML_CLASS_LIST) {
         if (xml->xml_target)
-            GC_MARK(cx, xml->xml_target, "target");
-        if (xml->xml_targetprop)
-            GC_MARK(cx, xml->xml_targetprop, "targetprop");
+            JS_CALL_TRACER(trc, xml->xml_target, JSTRACE_XML, "target");
+        if (xml->xml_targetprop) {
+            JS_CALL_TRACER(trc, xml->xml_targetprop, JSTRACE_QNAME,
+                           "targetprop");
+        }
     } else {
-        namespace_mark_vector(cx,
-                              (JSXMLNamespace **) xml->xml_namespaces.vector,
-                              xml->xml_namespaces.length);
-        XMLArrayCursorMark(cx, xml->xml_namespaces.cursors);
-        XMLArrayTrim(&xml->xml_namespaces);
+        namespace_trace_vector(trc,
+                               (JSXMLNamespace **)xml->xml_namespaces.vector,
+                               xml->xml_namespaces.length);
+        XMLArrayCursorTrace(trc, xml->xml_namespaces.cursors);
+        if (IS_GC_MARKING_TRACER(trc))
+            XMLArrayTrim(&xml->xml_namespaces);
 
-        xml_mark_vector(cx,
-                        (JSXML **) xml->xml_attrs.vector,
-                        xml->xml_attrs.length);
-        XMLArrayCursorMark(cx, xml->xml_attrs.cursors);
-        XMLArrayTrim(&xml->xml_attrs);
+        xml_trace_vector(trc,
+                            (JSXML **) xml->xml_attrs.vector,
+                            xml->xml_attrs.length);
+        XMLArrayCursorTrace(trc, xml->xml_attrs.cursors);
+        if (IS_GC_MARKING_TRACER(trc))
+            XMLArrayTrim(&xml->xml_attrs);
     }
 }
 
@@ -7612,7 +7540,7 @@ js_NewXMLObject(JSContext *cx, JSXMLClass xml_class)
     xml = js_NewXML(cx, xml_class);
     if (!xml)
         return NULL;
-    JS_PUSH_TEMP_ROOT_XML(cx, xml, &tvr);
+    JS_PUSH_TEMP_ROOT_GCTHING(cx, xml, &tvr);
     obj = js_GetXMLObject(cx, xml);
     JS_POP_TEMP_ROOT(cx, &tvr);
     return obj;
@@ -7698,12 +7626,12 @@ js_InitAnyNameClass(JSContext *cx, JSObject *obj)
 JSObject *
 js_InitXMLClass(JSContext *cx, JSObject *obj)
 {
-    JSObject *proto, *pobj, *ctor;
+    JSObject *proto, *pobj;
     JSFunction *fun;
     JSXML *xml;
     JSProperty *prop;
     JSScopeProperty *sprop;
-    jsval cval, argv[1], junk;
+    jsval cval, vp[3];
 
     /* Define the isXMLName function. */
     if (!JS_DefineFunction(cx, obj, js_isXMLName_str, xml_isXMLName, 1, 0))
@@ -7742,9 +7670,10 @@ js_InitXMLClass(JSContext *cx, JSObject *obj)
     JS_ASSERT(VALUE_IS_FUNCTION(cx, cval));
 
     /* Set default settings. */
-    ctor = JSVAL_TO_OBJECT(cval);
-    argv[0] = JSVAL_VOID;
-    if (!xml_setSettings(cx, ctor, 1, argv, &junk))
+    vp[0] = JSVAL_NULL;
+    vp[1] = cval;
+    vp[2] = JSVAL_VOID;
+    if (!xml_setSettings(cx, 1, vp))
         return NULL;
 
     /* Define the XMLList function and give it the same prototype as XML. */
@@ -7791,6 +7720,9 @@ js_GetFunctionNamespace(JSContext *cx, jsval *vp)
         obj = rt->functionNamespaceObject;
         if (!obj) {
             JS_UNLOCK_GC(rt);
+            atom = js_Atomize(cx, js_function_str, 8, 0);
+            JS_ASSERT(atom);
+            prefix = ATOM_TO_STRING(atom);
 
             /*
              * Note that any race to atomize anti_uri here is resolved by
@@ -7804,7 +7736,6 @@ js_GetFunctionNamespace(JSContext *cx, jsval *vp)
                 return JS_FALSE;
             rt->atomState.lazy.functionNamespaceURIAtom = atom;
 
-            prefix = ATOM_TO_STRING(rt->atomState.typeAtoms[JSTYPE_FUNCTION]);
             uri = ATOM_TO_STRING(atom);
             obj = js_NewXMLNamespaceObject(cx, prefix, uri, JS_FALSE);
             if (!obj)
@@ -7930,49 +7861,47 @@ js_ToAttributeName(JSContext *cx, jsval *vp)
 }
 
 JSString *
-js_EscapeAttributeValue(JSContext *cx, JSString *str, JSBool quote)
+js_EscapeAttributeValue(JSContext *cx, JSString *str)
 {
-    return EscapeAttributeValue(cx, NULL, str, quote);
+    return EscapeAttributeValue(cx, NULL, str);
 }
 
 JSString *
 js_AddAttributePart(JSContext *cx, JSBool isName, JSString *str, JSString *str2)
 {
     size_t len, len2, newlen;
-    jschar *chars;
+    jschar *chars, *chars2;
 
-    if (JSSTRING_IS_DEPENDENT(str) ||
-        !(*js_GetGCThingFlags(str) & GCF_MUTABLE)) {
-        str = js_NewStringCopyN(cx, JSSTRING_CHARS(str), JSSTRING_LENGTH(str),
-                                0);
+    JSSTRING_CHARS_AND_LENGTH(str, chars, len);
+    if (!JSSTRING_IS_MUTABLE(str)) {
+        str = js_NewStringCopyN(cx, chars, len);
         if (!str)
             return NULL;
+        chars = str->u.chars;
+    } else {
+        /*
+         * Reallocating str (because we know it has no other references)
+         * requires purging any deflated string cached for it.
+         */
+        js_PurgeDeflatedStringCache(cx->runtime, str);
     }
 
-    len = str->length;
-    len2 = JSSTRING_LENGTH(str2);
+    JSSTRING_CHARS_AND_LENGTH(str2, chars2, len2);
     newlen = (isName) ? len + 1 + len2 : len + 2 + len2 + 1;
-    chars = (jschar *) JS_realloc(cx, str->chars, (newlen+1) * sizeof(jschar));
+    chars = (jschar *) JS_realloc(cx, chars, (newlen+1) * sizeof(jschar));
     if (!chars)
         return NULL;
 
-    /*
-     * Reallocating str (because we know it has no other references) requires
-     * purging any deflated string cached for it.
-     */
-    js_PurgeDeflatedStringCache(cx->runtime, str);
-
-    str->chars = chars;
-    str->length = newlen;
+    JSSTRING_INIT(str, chars, newlen);
     chars += len;
     if (isName) {
         *chars++ = ' ';
-        js_strncpy(chars, JSSTRING_CHARS(str2), len2);
+        js_strncpy(chars, chars2, len2);
         chars += len2;
     } else {
         *chars++ = '=';
         *chars++ = '"';
-        js_strncpy(chars, JSSTRING_CHARS(str2), len2);
+        js_strncpy(chars, chars2, len2);
         chars += len2;
         *chars++ = '"';
     }
@@ -7989,7 +7918,7 @@ js_EscapeElementValue(JSContext *cx, JSString *str)
 JSString *
 js_ValueToXMLString(JSContext *cx, jsval v)
 {
-    return ToXMLString(cx, v, 0);
+    return ToXMLString(cx, v);
 }
 
 static JSBool
@@ -8075,54 +8004,78 @@ js_GetAnyName(JSContext *cx, jsval *vp)
 }
 
 JSBool
-js_FindXMLProperty(JSContext *cx, jsval name, JSObject **objp, jsval *namep)
+js_FindXMLProperty(JSContext *cx, jsval nameval, JSObject **objp, jsid *idp)
 {
+    JSObject *nameobj;
+    jsval v;
     JSXMLQName *qn;
-    jsid funid, id;
-    JSObject *obj, *pobj, *lastobj;
+    jsid funid;
+    JSObject *obj, *target, *proto, *pobj;
+    JSXML *xml;
+    JSBool found;
     JSProperty *prop;
     const char *printable;
 
-    qn = ToXMLName(cx, name, &funid);
-    if (!qn)
+    JS_ASSERT(!JSVAL_IS_PRIMITIVE(nameval));
+    nameobj = JSVAL_TO_OBJECT(nameval);
+    if (OBJ_GET_CLASS(cx, nameobj) == &js_AnyNameClass) {
+        v = STRING_TO_JSVAL(ATOM_TO_STRING(cx->runtime->atomState.starAtom));
+        nameobj = js_ConstructObject(cx, &js_QNameClass.base, NULL, NULL, 1,
+                                     &v);
+        if (!nameobj)
+            return JS_FALSE;
+    } else {
+        JS_ASSERT(OBJ_GET_CLASS(cx, nameobj) == &js_AttributeNameClass ||
+                  OBJ_GET_CLASS(cx, nameobj) == &js_QNameClass.base);
+    }
+
+    qn = (JSXMLQName *) JS_GetPrivate(cx, nameobj);
+    if (!IsFunctionQName(cx, qn, &funid))
         return JS_FALSE;
-    id = OBJECT_TO_JSID(qn->object);
 
     obj = cx->fp->scopeChain;
     do {
-        if (!OBJ_LOOKUP_PROPERTY(cx, obj, id, &pobj, &prop))
-            return JS_FALSE;
-        if (prop) {
-            OBJ_DROP_PROPERTY(cx, pobj, prop);
+        /* Skip any With object that can wrap XML. */
+        target = obj;
+        while (OBJ_GET_CLASS(cx, target) == &js_WithClass) {
+             proto = OBJ_GET_PROTO(cx, target);
+             if (!proto)
+                 break;
+             target = proto;
+        }
 
-            /*
-             * Call OBJ_THIS_OBJECT to skip any With object that wraps an XML
-             * object to carry scope chain linkage in js_FilterXMLList.
-             */
-            pobj = OBJ_THIS_OBJECT(cx, obj);
-            if (OBJECT_IS_XML(cx, pobj)) {
-                *objp = pobj;
-                *namep = ID_TO_VALUE(id);
+        if (OBJECT_IS_XML(cx, target)) {
+            if (funid == 0) {
+                xml = (JSXML *) JS_GetPrivate(cx, target);
+                found = HasNamedProperty(xml, qn);
+            } else {
+                if (!HasFunctionProperty(cx, target, funid, &found))
+                    return JS_FALSE;
+            }
+            if (found) {
+                *idp = OBJECT_TO_JSID(nameobj);
+                *objp = target;
+                return JS_TRUE;
+            }
+        } else if (funid != 0) {
+            if (!OBJ_LOOKUP_PROPERTY(cx, target, funid, &pobj, &prop))
+                return JS_FALSE;
+            if (prop) {
+                OBJ_DROP_PROPERTY(cx, pobj, prop);
+                *idp = funid;
+                *objp = target;
                 return JS_TRUE;
             }
         }
-
-        lastobj = obj;
     } while ((obj = OBJ_GET_PARENT(cx, obj)) != NULL);
 
-    printable = js_ValueToPrintableString(cx, name);
+    printable = js_ValueToPrintableString(cx, OBJECT_TO_JSVAL(nameobj));
     if (printable) {
         JS_ReportErrorFlagsAndNumber(cx, JSREPORT_ERROR,
                                      js_GetErrorMessage, NULL,
                                      JSMSG_UNDEFINED_XML_NAME, printable);
     }
     return JS_FALSE;
-}
-
-JSBool
-js_GetXMLProperty(JSContext *cx, JSObject *obj, jsval name, jsval *vp)
-{
-    return GetProperty(cx, obj, name, vp);
 }
 
 JSBool
@@ -8173,12 +8126,6 @@ js_GetXMLFunction(JSContext *cx, JSObject *obj, jsid id, jsval *vp)
     return ok;
 }
 
-JSBool
-js_SetXMLProperty(JSContext *cx, JSObject *obj, jsval name, jsval *vp)
-{
-    return PutProperty(cx, obj, name, vp);
-}
-
 static JSXML *
 GetPrivate(JSContext *cx, JSObject *obj, const char *method)
 {
@@ -8214,13 +8161,11 @@ js_DeleteXMLListElements(JSContext *cx, JSObject *listobj)
 {
     JSXML *list;
     uint32 n;
-    jsval junk;
 
     list = (JSXML *) JS_GetPrivate(cx, listobj);
-    for (n = list->xml_kids.length; n != 0; --n) {
-        if (!DeleteProperty(cx, listobj, INT_TO_JSID(0), &junk))
-            return JS_FALSE;
-    }
+    for (n = list->xml_kids.length; n != 0; --n)
+        DeleteListElement(cx, list, 0);
+
     return JS_TRUE;
 }
 
@@ -8230,7 +8175,7 @@ js_FilterXMLList(JSContext *cx, JSObject *obj, jsbytecode *pc, jsval *vp)
     JSBool ok, match;
     JSStackFrame *fp;
     uint32 flags;
-    JSObject *scobj, *listobj, *resobj, *withobj, *kidobj, *obj2;
+    JSObject *scobj, *listobj, *resobj, *withobj, *kidobj;
     JSXML *xml, *list, *result, *kid;
     JSXMLArrayCursor cursor;
 
@@ -8281,15 +8226,6 @@ js_FilterXMLList(JSContext *cx, JSObject *obj, jsbytecode *pc, jsval *vp)
             break;
         OBJ_SET_PROTO(cx, withobj, kidobj);
         ok = js_Interpret(cx, pc, vp) && js_ValueToBoolean(cx, *vp, &match);
-        for (obj2 = fp->scopeChain;
-             obj2 != withobj;
-             obj2 = OBJ_GET_PARENT(cx, obj2)) {
-            if (OBJ_GET_CLASS(cx, obj2) == &js_BlockClass) {
-                if (JS_GetPrivate(cx, obj2) != fp)
-                    break;
-                ok &= js_PutBlockObject(cx, obj2);
-            }
-        }
         if (ok && match)
             ok = Append(cx, result, kid);
         if (!ok)

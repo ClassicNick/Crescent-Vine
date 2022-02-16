@@ -53,27 +53,27 @@ JS_Assert(const char *s, const char *file, JSIntn ln);
 #define JS_ASSERT(_expr) \
     ((_expr)?((void)0):JS_Assert(# _expr,__FILE__,__LINE__))
 
+#define JS_ASSERT_IF(_cond, _expr) \
+    (!(_cond) || (_expr)?((void)0):JS_Assert(# _expr,__FILE__,__LINE__))
+
 #define JS_NOT_REACHED(_reasonStr) \
     JS_Assert(_reasonStr,__FILE__,__LINE__)
 
 #else
 
 #define JS_ASSERT(expr) ((void) 0)
+#define JS_ASSERT_IF(cond,expr) ((void) 0)
 #define JS_NOT_REACHED(reasonStr)
 
 #endif /* defined(DEBUG) */
 
 /*
  * Compile-time assert. "condition" must be a constant expression.
- * The macro should be used only once per source line in places where
- * a "typedef" declaration is allowed.
+ * The macro can be used only in places where an "extern" declaration is
+ * allowed.
  */
 #define JS_STATIC_ASSERT(condition)                                           \
-    JS_STATIC_ASSERT_IMPL(condition, __LINE__)
-#define JS_STATIC_ASSERT_IMPL(condition, line)                                \
-    JS_STATIC_ASSERT_IMPL2(condition, line)
-#define JS_STATIC_ASSERT_IMPL2(condition, line)                               \
-    typedef int js_static_assert_line_##line[(condition) ? 1 : -1]
+    extern void js_static_assert(int arg[(condition) ? 1 : -1])
 
 /*
 ** Abort the process in a non-graceful manner. This will cause a core file,

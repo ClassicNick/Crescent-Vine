@@ -95,154 +95,24 @@ typedef struct JSInlineFrame {
 /* JS stack frame flags. */
 #define JSFRAME_CONSTRUCTING  0x01  /* frame is for a constructor invocation */
 #define JSFRAME_INTERNAL      0x02  /* internal call, not invoked by a script */
-#define JSFRAME_SKIP_CALLER   0x04  /* skip one link when evaluating f.caller
-                                       for this invocation of f */
-#define JSFRAME_ASSIGNING     0x08  /* a complex (not simplex JOF_ASSIGNING) op
+#define JSFRAME_ASSIGNING     0x04  /* a complex (not simplex JOF_ASSIGNING) op
                                        is currently assigning to a property */
-#define JSFRAME_DEBUGGER      0x10  /* frame for JS_EvaluateInStackFrame */
-#define JSFRAME_EVAL          0x20  /* frame for obj_eval */
-#define JSFRAME_SPECIAL       0x30  /* special evaluation frame flags */
-#define JSFRAME_COMPILING     0x40  /* frame is being used by compiler */
-#define JSFRAME_COMPILE_N_GO  0x80  /* compiler-and-go mode, can optimize name
+#define JSFRAME_DEBUGGER      0x08  /* frame for JS_EvaluateInStackFrame */
+#define JSFRAME_EVAL          0x10  /* frame for obj_eval */
+#define JSFRAME_SPECIAL       0x18  /* special evaluation frame flags */
+#define JSFRAME_COMPILING     0x20  /* frame is being used by compiler */
+#define JSFRAME_COMPILE_N_GO  0x40  /* compiler-and-go mode, can optimize name
                                        references based on scope chain */
-#define JSFRAME_SCRIPT_OBJECT 0x100 /* compiling source for a Script object */
-#define JSFRAME_YIELDING      0x200 /* js_Interpret dispatched JSOP_YIELD */
-#define JSFRAME_FILTERING     0x400 /* XML filtering predicate expression */
-#define JSFRAME_ITERATOR      0x800 /* trying to get an iterator for for-in */
-#define JSFRAME_POP_BLOCKS   0x1000 /* scope chain contains blocks to pop */
-#define JSFRAME_GENERATOR    0x2000 /* frame belongs to generator-iterator */
+#define JSFRAME_SCRIPT_OBJECT 0x80  /* compiling source for a Script object */
+#define JSFRAME_YIELDING      0x100 /* js_Interpret dispatched JSOP_YIELD */
+#define JSFRAME_FILTERING     0x200 /* XML filtering predicate expression */
+#define JSFRAME_ITERATOR      0x400 /* trying to get an iterator for for-in */
+#define JSFRAME_POP_BLOCKS    0x800 /* scope chain contains blocks to pop */
+#define JSFRAME_GENERATOR    0x1000 /* frame belongs to generator-iterator */
+#define JSFRAME_ROOTED_ARGV  0x2000 /* frame.argv is rooted by the caller */
 
 #define JSFRAME_OVERRIDE_SHIFT 24   /* override bit-set params; see jsfun.c */
 #define JSFRAME_OVERRIDE_BITS  8
-
-/*
- * Property cache for quickened get/set property opcodes.
- */
-#define PROPERTY_CACHE_LOG2     10
-#define PROPERTY_CACHE_SIZE     JS_BIT(PROPERTY_CACHE_LOG2)
-#define PROPERTY_CACHE_MASK     JS_BITMASK(PROPERTY_CACHE_LOG2)
-
-#define PROPERTY_CACHE_HASH(obj, id) \
-    ((((jsuword)(obj) >> JSVAL_TAGBITS) ^ (jsuword)(id)) & PROPERTY_CACHE_MASK)
-
-#ifdef JS_THREADSAFE
-
-#if HAVE_ATOMIC_DWORD_ACCESS
-
-#define PCE_LOAD(cache, pce, entry)     JS_ATOMIC_DWORD_LOAD(pce, entry)
-#define PCE_STORE(cache, pce, entry)    JS_ATOMIC_DWORD_STORE(pce, entry)
-
-#else  /* !HAVE_ATOMIC_DWORD_ACCESS */
-
-#define JS_PROPERTY_CACHE_METERING      1
-
-#define PCE_LOAD(cache, pce, entry)                                           \
-    JS_BEGIN_MACRO                                                            \
-        uint32 prefills_;                                                     \
-        uint32 fills_ = (cache)->fills;                                       \
-        do {                                                                  \
-            /* Load until cache->fills is stable (see FILL macro below). */   \
-            prefills_ = fills_;                                               \
-            (entry) = *(pce);                                                 \
-        } while ((fills_ = (cache)->fills) != prefills_);                     \
-    JS_END_MACRO
-
-#define PCE_STORE(cache, pce, entry)                                          \
-    JS_BEGIN_MACRO                                                            \
-        do {                                                                  \
-            /* Store until no racing collider stores half or all of pce. */   \
-            *(pce) = (entry);                                                 \
-        } while (PCE_OBJECT(*pce) != PCE_OBJECT(entry) ||                     \
-                 PCE_PROPERTY(*pce) != PCE_PROPERTY(entry));                  \
-    JS_END_MACRO
-
-#endif /* !HAVE_ATOMIC_DWORD_ACCESS */
-
-#else  /* !JS_THREADSAFE */
-
-#define PCE_LOAD(cache, pce, entry)     ((entry) = *(pce))
-#define PCE_STORE(cache, pce, entry)    (*(pce) = (entry))
-
-#endif /* !JS_THREADSAFE */
-
-typedef union JSPropertyCacheEntry {
-    struct {
-        JSObject        *object;        /* weak link to object */
-        JSScopeProperty *property;      /* weak link to property */
-    } s;
-#ifdef HAVE_ATOMIC_DWORD_ACCESS
-    prdword align;
-#endif
-} JSPropertyCacheEntry;
-
-/* These may be called in lvalue or rvalue position. */
-#define PCE_OBJECT(entry)       ((entry).s.object)
-#define PCE_PROPERTY(entry)     ((entry).s.property)
-
-typedef struct JSPropertyCache {
-    JSPropertyCacheEntry table[PROPERTY_CACHE_SIZE];
-    JSBool               empty;
-    JSBool               disabled;
-#ifdef JS_PROPERTY_CACHE_METERING
-    uint32               fills;
-    uint32               recycles;
-    uint32               tests;
-    uint32               misses;
-    uint32               flushes;
-# define PCMETER(x)      x
-#else
-# define PCMETER(x)      /* nothing */
-#endif
-} JSPropertyCache;
-
-#define PROPERTY_CACHE_FILL(cache, obj, id, sprop)                            \
-    JS_BEGIN_MACRO                                                            \
-        JSPropertyCache *cache_ = (cache);                                    \
-        if (!cache_->disabled) {                                              \
-            uintN hashIndex_ = (uintN) PROPERTY_CACHE_HASH(obj, id);          \
-            JSPropertyCacheEntry *pce_ = &cache_->table[hashIndex_];          \
-            JSPropertyCacheEntry entry_;                                      \
-            JSScopeProperty *pce_sprop_;                                      \
-            PCE_LOAD(cache_, pce_, entry_);                                   \
-            pce_sprop_ = PCE_PROPERTY(entry_);                                \
-            PCMETER(if (pce_sprop_ && pce_sprop_ != sprop)                    \
-                        cache_->recycles++);                                  \
-            PCE_OBJECT(entry_) = obj;                                         \
-            PCE_PROPERTY(entry_) = sprop;                                     \
-            cache_->empty = JS_FALSE;                                         \
-            PCMETER(cache_->fills++);                                         \
-            PCE_STORE(cache_, pce_, entry_);                                  \
-        }                                                                     \
-    JS_END_MACRO
-
-#define PROPERTY_CACHE_TEST(cache, obj, id, sprop)                            \
-    JS_BEGIN_MACRO                                                            \
-        uintN hashIndex_ = (uintN) PROPERTY_CACHE_HASH(obj, id);              \
-        JSPropertyCache *cache_ = (cache);                                    \
-        JSPropertyCacheEntry *pce_ = &cache_->table[hashIndex_];              \
-        JSPropertyCacheEntry entry_;                                          \
-        JSScopeProperty *pce_sprop_;                                          \
-        PCE_LOAD(cache_, pce_, entry_);                                       \
-        pce_sprop_ = PCE_PROPERTY(entry_);                                    \
-        PCMETER(cache_->tests++);                                             \
-        if (pce_sprop_ &&                                                     \
-            PCE_OBJECT(entry_) == obj &&                                      \
-            pce_sprop_->id == id) {                                           \
-            sprop = pce_sprop_;                                               \
-        } else {                                                              \
-            PCMETER(cache_->misses++);                                        \
-            sprop = NULL;                                                     \
-        }                                                                     \
-    JS_END_MACRO
-
-extern void
-js_FlushPropertyCache(JSContext *cx);
-
-extern void
-js_DisablePropertyCache(JSContext *cx);
-
-extern void
-js_EnablePropertyCache(JSContext *cx);
 
 extern JS_FRIEND_API(jsval *)
 js_AllocStack(JSContext *cx, uintN nslots, void **markp);
@@ -282,22 +152,38 @@ extern JSObject *
 js_GetScopeChain(JSContext *cx, JSStackFrame *fp);
 
 /*
- * Compute the 'this' parameter for a call with nominal 'this' given by thisp
- * and arguments including argv[-1] (nominal 'this') and argv[-2] (callee).
- * Activation objects ("Call" objects not created with "new Call()", i.e.,
- * "Call" objects that have private data) may not be referred to by 'this',
- * per ECMA-262, so js_ComputeThis censors them.
+ * Given a context and a vector of [callee, this, args...] for a function that
+ * was specified with a JSFUN_THISP_PRIMITIVE flag, get the primitive value of
+ * |this| into *thisvp. In doing so, if |this| is an object, insist it is an
+ * instance of clasp and extract its private slot value to return via *thisvp.
+ *
+ * NB: this function loads and uses *vp before storing *thisvp, so the two may
+ * alias the same jsval.
  */
-extern JSObject *
-js_ComputeThis(JSContext *cx, JSObject *thisp, jsval *argv);
+extern JSBool
+js_GetPrimitiveThis(JSContext *cx, jsval *vp, JSClass *clasp, jsval *thisvp);
+
+/*
+ * For a call with arguments argv including argv[-1] (nominal |this|) and
+ * argv[-2] (callee) replace null |this| with callee's parent, replace
+ * primitive values with the equivalent wrapper objects and censor activation
+ * objects as, per ECMA-262, they may not be referred to by |this|. argv[-1]
+ * must not be a JSVAL_VOID.
+ */
+extern JSBool
+js_ComputeThis(JSContext *cx, jsval *argv);
 
 /*
  * NB: js_Invoke requires that cx is currently running JS (i.e., that cx->fp
- * is non-null), and that the callee, |this| parameter, and actual arguments
- * are already pushed on the stack under cx->fp->sp.
+ * is non-null), and that vp points to the callee, |this| parameter, and
+ * actual arguments of the call. [vp .. vp + 2 + argc) must belong to the last
+ * JS stack segment that js_AllocStack or js_AllocRawStack allocated. The
+ * function may use the space available after vp + 2 + argc in the stack
+ * segment for temporaries so the caller should not use that space for values
+ * that must be preserved across the call.
  */
 extern JS_FRIEND_API(JSBool)
-js_Invoke(JSContext *cx, uintN argc, uintN flags);
+js_Invoke(JSContext *cx, uintN argc, jsval *vp, uintN flags);
 
 /*
  * Consolidated js_Invoke flags simply rename certain JSFRAME_* flags, so that
@@ -314,7 +200,6 @@ js_Invoke(JSContext *cx, uintN argc, uintN flags);
  */
 #define JSINVOKE_CONSTRUCT      JSFRAME_CONSTRUCTING
 #define JSINVOKE_INTERNAL       JSFRAME_INTERNAL
-#define JSINVOKE_SKIP_CALLER    JSFRAME_SKIP_CALLER
 #define JSINVOKE_ITERATOR       JSFRAME_ITERATOR
 
 /*

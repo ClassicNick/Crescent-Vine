@@ -50,6 +50,8 @@
 #include "jsprvtd.h"    /* for JSScope, etc. */
 #include "jspubtd.h"    /* for JSRuntime, etc. */
 
+JS_BEGIN_EXTERN_C
+
 #define Thin_GetWait(W) ((jsword)(W) & 0x1)
 #define Thin_SetWait(W) ((jsword)(W) | 0x1)
 #define Thin_RemoveWait(W) ((jsword)(W) & ~0x1)
@@ -110,7 +112,9 @@ typedef struct JSFatLockTable {
  * to be fixed by moving JS_LOCK_SCOPE to jsscope.h, JS_LOCK_OBJ to jsobj.h,
  * and so on.
  */
+JS_END_EXTERN_C
 #include "jsscope.h"
+JS_BEGIN_EXTERN_C
 
 #define JS_LOCK_RUNTIME(rt)         js_LockRuntime(rt)
 #define JS_UNLOCK_RUNTIME(rt)       js_UnlockRuntime(rt)
@@ -149,7 +153,7 @@ js_GetSlotThreadSafe(JSContext *, JSObject *, uint32);
 extern void js_SetSlotThreadSafe(JSContext *, JSObject *, uint32, jsval);
 extern void js_InitLock(JSThinLock *);
 extern void js_FinishLock(JSThinLock *);
-extern void js_FinishSharingScope(JSRuntime *rt, JSScope *scope);
+extern void js_FinishSharingScope(JSContext *cx, JSScope *scope);
 
 #ifdef DEBUG
 
@@ -182,6 +186,9 @@ extern JSBool js_IsScopeLocked(JSContext *cx, JSScope *scope);
         JS_LOCK_RUNTIME_VOID(_rt, e);                                         \
     JS_END_MACRO
 
+/* FIXME: bug 353962 hackaround */
+#define JS_USE_ONLY_NSPR_LOCKS  1
+
 #if defined(JS_USE_ONLY_NSPR_LOCKS) ||                                        \
     !( (defined(_WIN32) && defined(_M_IX86)) ||                               \
        (defined(__GNUC__) && defined(__i386__)) ||                            \
@@ -206,6 +213,8 @@ extern JS_INLINE void js_Unlock(JSThinLock *tl, jsword me);
 #endif /* arch-tests */
 
 #else  /* !JS_THREADSAFE */
+
+JS_BEGIN_EXTERN_C
 
 #define JS_ATOMIC_INCREMENT(p)      (++*(p))
 #define JS_ATOMIC_DECREMENT(p)      (--*(p))
@@ -259,5 +268,7 @@ extern JS_INLINE void js_Unlock(JSThinLock *tl, jsword me);
 
 #define JS_LOCK(P,CX)               JS_LOCK0(P, CX_THINLOCK_ID(CX))
 #define JS_UNLOCK(P,CX)             JS_UNLOCK0(P, CX_THINLOCK_ID(CX))
+
+JS_END_EXTERN_C
 
 #endif /* jslock_h___ */

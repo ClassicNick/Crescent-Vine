@@ -99,11 +99,17 @@ JS_ClearAllWatchPoints(JSContext *cx);
  * header file "jsconfig.h" has been included.
  */
 extern void
-js_MarkWatchPoints(JSContext *cx);
+js_TraceWatchPoints(JSTracer *trc, JSObject *obj);
+
+extern void
+js_SweepWatchPoints(JSContext *cx);
 
 extern JSScopeProperty *
 js_FindWatchPoint(JSRuntime *rt, JSScope *scope, jsid id);
 
+/*
+ * NB: callers outside of jsdbgapi.c must pass non-null scope.
+ */
 extern JSPropertyOp
 js_GetWatchedSetter(JSRuntime *rt, JSScope *scope,
                     const JSScopeProperty *sprop);
@@ -133,6 +139,9 @@ JS_GetFunctionScript(JSContext *cx, JSFunction *fun);
 
 extern JS_PUBLIC_API(JSNative)
 JS_GetFunctionNative(JSContext *cx, JSFunction *fun);
+
+extern JS_PUBLIC_API(JSFastNative)
+JS_GetFunctionFastNative(JSContext *cx, JSFunction *fun);
 
 extern JS_PUBLIC_API(JSPrincipals *)
 JS_GetScriptPrincipals(JSContext *cx, JSScript *script);
@@ -226,7 +235,7 @@ extern JS_PUBLIC_API(void)
 JS_SetFrameReturnValue(JSContext *cx, JSStackFrame *fp, jsval rval);
 
 /**
- * Return fp's callee function object (fp->argv[-2]) if it has one.
+ * Return fp's callee function object (fp->callee) if it has one.
  */
 extern JS_PUBLIC_API(JSObject *)
 JS_GetFrameCalleeObject(JSContext *cx, JSStackFrame *fp);
@@ -400,6 +409,14 @@ JS_IsSystemObject(JSContext *cx, JSObject *obj);
  */
 extern JS_PUBLIC_API(void)
 JS_FlagSystemObject(JSContext *cx, JSObject *obj);
+
+/************************************************************************/
+
+extern JS_PUBLIC_API(JSDebugHooks *)
+JS_GetGlobalDebugHooks(JSRuntime *rt);
+
+extern JS_PUBLIC_API(JSDebugHooks *)
+JS_SetContextDebugHooks(JSContext *cx, JSDebugHooks *hooks);
 
 JS_END_EXTERN_C
 

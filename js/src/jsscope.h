@@ -52,6 +52,8 @@
 # include "jslock.h"
 #endif
 
+JS_BEGIN_EXTERN_C
+
 /*
  * Given P independent, non-unique properties each of size S words mapped by
  * all scopes in a runtime, construct a property tree of N nodes each of size
@@ -119,10 +121,7 @@
  * are find-node and insert-node, then the only hazard is duplicate insertion.
  * This is harmless except for minor bloat.  When all requests have ended or
  * been suspended, the GC is free to sweep the tree after marking all nodes
- * reachable from scopes, performing remove-node operations as needed.  Note
- * also that the stable storage of the property nodes during active requests
- * permits the property cache (see jsinterp.h) to dereference JSScopeProperty
- * weak references safely.
+ * reachable from scopes, performing remove-node operations as needed.
  *
  * Is the property tree worth it compared to property storage in each table's
  * entries?  To decide, we must find the relation <> between the words used
@@ -258,7 +257,7 @@ struct JSScopeProperty {
     jsid            id;                 /* int-tagged jsval/untagged JSAtom* */
     JSPropertyOp    getter;             /* getter and setter hooks or objects */
     JSPropertyOp    setter;
-    uint32          slot;               /* index in obj->slots vector */
+    uint32          slot;               /* abstract index in object slots */
     uint8           attrs;              /* attributes, see jsapi.h JSPROP_* */
     uint8           flags;              /* flags, see below for defines */
     int16           shortid;            /* tinyid, or local arg/var index */
@@ -349,12 +348,8 @@ js_NewScope(JSContext *cx, jsrefcount nrefs, JSObjectOps *ops, JSClass *clasp,
 extern void
 js_DestroyScope(JSContext *cx, JSScope *scope);
 
-#define ID_TO_VALUE(id) (JSID_IS_ATOM(id) ? ATOM_JSID_TO_JSVAL(id) :          \
-                         JSID_IS_OBJECT(id) ? OBJECT_JSID_TO_JSVAL(id) :      \
-                         (jsval)(id))
-#define HASH_ID(id)     (JSID_IS_ATOM(id) ? JSID_TO_ATOM(id)->number :        \
-                         JSID_IS_OBJECT(id) ? (jsatomid) JSID_CLRTAG(id) :    \
-                         (jsatomid) JSID_TO_INT(id))
+#define ID_TO_VALUE(id)                                                       \
+    (JSID_IS_HIDDEN(id) ? (jsval)JSID_UNHIDE_NAME(id) : (jsval)(id))
 
 extern JS_FRIEND_API(JSScopeProperty **)
 js_SearchScope(JSScope *scope, jsid id, JSBool adding);
@@ -386,22 +381,24 @@ js_ClearScope(JSContext *cx, JSScope *scope);
  * We retain them for internal backward compatibility, and in case one or both
  * ever shrink to inline-able size.
  */
-#define MARK_ID(cx,id)                js_MarkId(cx, id)
-#define MARK_SCOPE_PROPERTY(cx,sprop) js_MarkScopeProperty(cx, sprop)
+#define TRACE_ID(trc, id)                js_TraceId(trc, id)
+#define TRACE_SCOPE_PROPERTY(trc, sprop) js_TraceScopeProperty(trc, sprop)
 
 extern void
-js_MarkId(JSContext *cx, jsid id);
+js_TraceId(JSTracer *trc, jsid id);
 
 extern void
-js_MarkScopeProperty(JSContext *cx, JSScopeProperty *sprop);
+js_TraceScopeProperty(JSTracer *trc, JSScopeProperty *sprop);
 
 extern void
-js_SweepScopeProperties(JSRuntime *rt);
+js_SweepScopeProperties(JSContext *cx);
 
 extern JSBool
 js_InitPropertyTree(JSRuntime *rt);
 
 extern void
 js_FinishPropertyTree(JSRuntime *rt);
+
+JS_END_EXTERN_C
 
 #endif /* jsscope_h___ */

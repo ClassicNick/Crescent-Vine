@@ -77,13 +77,21 @@ struct PRMJTime {
 extern JSInt64
 PRMJ_Now(void);
 
+/* Release the resources associated with PRMJ_Now; don't call PRMJ_Now again */
+#if defined(JS_THREADSAFE) && defined(XP_WIN)
+extern void
+PRMJ_NowShutdown(void);
+#else
+#define PRMJ_NowShutdown()
+#endif
+
 /* get the difference between this time zone and  gmt timezone in seconds */
 extern JSInt32
 PRMJ_LocalGMTDifference(void);
 
 /* Format a time value into a buffer. Same semantics as strftime() */
 extern size_t
-PRMJ_FormatTime(char *buf, int buflen, char *fmt, PRMJTime *tm);
+PRMJ_FormatTime(char *buf, int buflen, const char *fmt, PRMJTime *tm);
 
 /* Get the DST offset for the local time passed in */
 extern JSInt64
