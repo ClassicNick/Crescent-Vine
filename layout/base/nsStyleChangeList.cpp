@@ -35,6 +35,11 @@
  *
  * ***** END LICENSE BLOCK ***** */
 
+/*
+ * a list of the recomputation that needs to be done in response to a
+ * style change
+ */
+
 #include "nsStyleChangeList.h"
 #include "nsStyleConsts.h"
 #include "nsIFrame.h"
@@ -42,8 +47,6 @@
 #include "nsCRT.h"
 
 static const PRUint32 kGrowArrayBy = 10;
-
-MOZ_DECL_CTOR_COUNTER(nsStyleChangeList)
 
 nsStyleChangeList::nsStyleChangeList(void)
   : mArray(mBuffer),
@@ -89,7 +92,7 @@ nsStyleChangeList::AppendChange(nsIFrame* aFrame, nsIContent* aContent, nsChange
                "must have frame");
   NS_ASSERTION(aContent || !(aHint & nsChangeHint_ReconstructFrame),
                "must have content");
-  NS_ASSERTION(!aContent || aContent->IsContentOfType(nsIContent::eELEMENT),
+  NS_ASSERTION(!aContent || aContent->IsNodeOfType(nsINode::eELEMENT),
                "Shouldn't be trying to restyle non-elements directly");
 
   if ((0 < mCount) && (aHint & nsChangeHint_ReconstructFrame)) { // filter out all other changes for same content

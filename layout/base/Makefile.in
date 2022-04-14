@@ -42,6 +42,10 @@ VPATH		= @srcdir@
 
 include $(DEPTH)/config/autoconf.mk
 
+ifdef MOZ_MOCHITEST
+DIRS		+= tests
+endif
+
 MODULE		= layout
 XPIDL_MODULE	= layout_base
 GRE_MODULE	= 1
@@ -74,27 +78,35 @@ REQUIRES	= xpcom \
 		  windowwatcher \
 		  accessibility \
 		  shistory \
+		  caps \
 		  $(NULL)
 
+ifdef MOZ_ENABLE_CAIRO_GFX
+REQUIRES += thebes cairo
+endif
+
 XPIDLSRCS	= \
-		nsIChromeEventHandler.idl	\
-		nsISelectionImageService.idl	\
 		nsIStyleSheetService.idl	\
 		$(NULL)
+
+ifndef MOZ_ENABLE_CAIRO_GFX
+XPIDLSRCS	+= \
+		nsISelectionImageService.idl	\
+		$(NULL)
+endif
 
 EXPORTS		= \
 		nsBidi.h \
 		nsBidiPresUtils.h \
-		nsBidiUtils.h \
 		nsCSSFrameConstructor.h \
 		nsChangeHint.h \
 		nsCompatibility.h \
+		nsDisplayList.h \
 		nsFrameManager.h \
 		nsFrameManagerBase.h \
 		nsFrameTraversal.h \
 		nsICaret.h \
 		nsIDocumentViewer.h \
-		nsIFrameSelection.h \
 		nsIFrameTraversal.h \
 		nsIImageMap.h \
 		nsILayoutDebugger.h \
@@ -102,8 +114,6 @@ EXPORTS		= \
 		nsIPercentHeightObserver.h  \
 		nsIPresShell.h \
 		nsIReflowCallback.h \
-		nsLayoutAtomList.h \
-		nsLayoutAtoms.h \
 		nsLayoutErrors.h \
 		nsLayoutUtils.h \
 		nsPresContext.h \
@@ -113,20 +123,18 @@ EXPORTS		= \
 		$(NULL)
 
 CPPSRCS		= \
-		nsBidiUtils.cpp \
 		nsCSSColorUtils.cpp \
 		nsCSSFrameConstructor.cpp \
 		nsCSSRendering.cpp \
 		nsCaret.cpp \
 		nsChildIterator.cpp \
 		nsCounterManager.cpp \
+                nsDisplayList.cpp \
 		nsDocumentViewer.cpp \
-		nsFrameContentIterator.cpp \
 		nsFrameManager.cpp \
 		nsFrameTraversal.cpp \
 		nsGenConList.cpp \
 		nsImageLoader.cpp \
-		nsLayoutAtoms.cpp \
 		nsLayoutDebugger.cpp \
 		nsLayoutHistoryState.cpp \
 		nsLayoutUtils.cpp \
@@ -156,9 +164,12 @@ LOCAL_INCLUDES += \
 		-I$(srcdir)/../tables \
 		-I$(srcdir)/../printing \
 		-I$(srcdir)/../xul/base/src \
+		-I$(srcdir)/../../content/base/src \
 		-I$(srcdir)/../../content/events/src \
 		-I$(srcdir)/../../content/xbl/src \
 		-I$(srcdir)/../../view/src \
+		-I$(srcdir)/../../dom/src/base \
+		-I$(srcdir)/../../content/svg/content/src \
 		$(NULL)
 
 ifdef MOZ_MATHML
@@ -170,6 +181,10 @@ endif
 ifdef MOZ_SVG
 LOCAL_INCLUDES += \
         -I$(srcdir)/../svg/base/src
+endif
+
+ifdef MOZ_ENABLE_CAIRO_GFX
+CXXFLAGS += $(MOZ_CAIRO_CFLAGS)
 endif
 
 DEFINES += -D_IMPL_NS_LAYOUT

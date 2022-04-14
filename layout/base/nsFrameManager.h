@@ -47,6 +47,8 @@
  * 04/20/2000       IBM Corp.      OS/2 VisualAge build.
  */
 
+/* storage of the frame tree and information about it */
+
 #ifndef _nsFrameManager_h_
 #define _nsFrameManager_h_
 
@@ -108,7 +110,10 @@ public:
   NS_HIDDEN_(nsIFrame*) GetCanvasFrame();
 
   // Primary frame functions
-  NS_HIDDEN_(nsIFrame*) GetPrimaryFrameFor(nsIContent* aContent);
+  // If aIndexHint it not -1, it will be used as when determining a frame hint
+  // instead of calling IndexOf(aContent).
+  NS_HIDDEN_(nsIFrame*) GetPrimaryFrameFor(nsIContent* aContent,
+                                           PRInt32 aIndexHint);
   // aPrimaryFrame must not be null.  If you're trying to remove a primary frame
   // mapping, use RemoveAsPrimaryFrame.
   NS_HIDDEN_(nsresult)  SetPrimaryFrameFor(nsIContent* aContent,
@@ -159,14 +164,6 @@ public:
                                    nsIAtom*        aListName,
                                    nsIFrame*       aOldFrame);
 
-  NS_HIDDEN_(nsresult) ReplaceFrame(nsIFrame*       aParentFrame,
-                                    nsIAtom*        aListName,
-                                    nsIFrame*       aOldFrame,
-                                    nsIFrame*       aNewFrame)
-  {
-    return aParentFrame->ReplaceFrame(aListName, aOldFrame, aNewFrame);
-  }
-
   /*
    * Notification that a frame is about to be destroyed. This allows any
    * outstanding references to the frame to be cleaned up.
@@ -195,7 +192,8 @@ public:
   // Determine whether an attribute affects style
   NS_HIDDEN_(nsReStyleHint) HasAttributeDependentStyle(nsIContent *aContent,
                                                        nsIAtom *aAttribute,
-                                                       PRInt32 aModType);
+                                                       PRInt32 aModType,
+                                                       PRUint32 aStateMask);
 
   /*
    * Capture/restore frame state for the frame subtree rooted at aFrame.
@@ -230,13 +228,12 @@ public:
   NS_HIDDEN_(void) DebugVerifyStyleTree(nsIFrame* aFrame);
 #endif
 
-private:
-
   NS_HIDDEN_(nsIPresShell*) GetPresShell() const { return mPresShell; }
   NS_HIDDEN_(nsPresContext*) GetPresContext() const {
     return mPresShell->GetPresContext();
   }
 
+private:
   NS_HIDDEN_(nsChangeHint)
     ReResolveStyleContext(nsPresContext    *aPresContext,
                           nsIFrame          *aFrame,

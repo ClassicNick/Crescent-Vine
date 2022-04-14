@@ -36,6 +36,8 @@
  *
  * ***** END LICENSE BLOCK ***** */
 
+/* implementation of interface for managing user and user-agent style sheets */
+
 #include "nsStyleSheetService.h"
 #include "nsIStyleSheet.h"
 #include "nsICSSLoader.h"
@@ -47,6 +49,7 @@
 #include "nsICategoryManager.h"
 #include "nsISupportsPrimitives.h"
 #include "nsNetUtil.h"
+#include "nsIObserverService.h"
 
 static NS_DEFINE_CID(kCSSLoaderCID, NS_CSS_LOADER_CID);
 
@@ -94,7 +97,7 @@ nsStyleSheetService::RegisterFromEnumerator(nsICategoryManager  *aManager,
     nsCOMPtr<nsIURI> uri;
     NS_NewURI(getter_AddRefs(uri), spec);
     if (uri)
-      LoadAndRegisterSheet(uri, aSheetType);
+      LoadAndRegisterSheetInternal(uri, aSheetType);
   }
 }
 
@@ -141,18 +144,41 @@ NS_IMETHODIMP
 nsStyleSheetService::LoadAndRegisterSheet(nsIURI *aSheetURI,
                                           PRUint32 aSheetType)
 {
+  nsresult rv = LoadAndRegisterSheetInternal(aSheetURI, aSheetType);
+  if (NS_SUCCEEDED(rv)) {
+    const char* message = (aSheetType == AGENT_SHEET) ?
+      "agent-sheet-added" : "user-sheet-added";
+    nsCOMPtr<nsIObserverService> serv =
+      do_GetService("@mozilla.org/observer-service;1");
+    if (serv) {
+      // We're guaranteed that the new sheet is the last sheet in
+      // mSheets[aSheetType]
+      const nsCOMArray<nsIStyleSheet> & sheets = mSheets[aSheetType];
+      serv->NotifyObservers(sheets[sheets.Count() - 1], message, nsnull);
+    }
+  }
+  return rv;
+}
+
+nsresult
+nsStyleSheetService::LoadAndRegisterSheetInternal(nsIURI *aSheetURI,
+                                                  PRUint32 aSheetType)
+{
   NS_ENSURE_ARG(aSheetType == AGENT_SHEET || aSheetType == USER_SHEET);
   NS_ENSURE_ARG_POINTER(aSheetURI);
 
-  nsCOMPtr<nsICSSLoader_MOZILLA_1_8_BRANCH> loader = do_CreateInstance(kCSSLoaderCID);
+  nsCOMPtr<nsICSSLoader> loader = do_CreateInstance(kCSSLoaderCID);
   nsCOMPtr<nsICSSStyleSheet> sheet;
+  // Allow UA sheets, but not user sheets, to use unsafe rules
   nsresult rv = loader->LoadSheetSync(aSheetURI, aSheetType == AGENT_SHEET,
                                       getter_AddRefs(sheet));
   NS_ENSURE_SUCCESS(rv, rv);
 
-  mSheets[aSheetType].AppendObject(sheet);
+  if (!mSheets[aSheetType].AppendObject(sheet)) {
+    rv = NS_ERROR_OUT_OF_MEMORY;
+  }
 
-  return NS_OK;
+  return rv;
 }
 
 NS_IMETHODIMP
@@ -176,7 +202,16 @@ nsStyleSheetService::UnregisterSheet(nsIURI *sheetURI, PRUint32 aSheetType)
 
   PRInt32 foundIndex = FindSheetByURI(mSheets[aSheetType], sheetURI);
   NS_ENSURE_TRUE(foundIndex >= 0, NS_ERROR_INVALID_ARG);
+  nsCOMPtr<nsIStyleSheet> sheet = mSheets[aSheetType][foundIndex];
   mSheets[aSheetType].RemoveObjectAt(foundIndex);
-
+  
+  const char* message = (aSheetType == AGENT_SHEET) ?
+      "agent-sheet-removed" : "user-sheet-removed";
+  nsCOMPtr<nsIObserverService> serv =
+    do_GetService("@mozilla.org/observer-service;1");
+  if (serv) {
+    serv->NotifyObservers(sheet, message, nsnull);
+  }
+  
   return NS_OK;
 }

@@ -36,6 +36,8 @@
  *
  * ***** END LICENSE BLOCK ***** */
 
+/* interface for managing user and user-agent style sheets */
+
 #include "nsISupports.idl"
 
 interface nsIURI;
@@ -45,7 +47,7 @@ interface nsIURI;
  * built-in list of user or agent style sheets.
  */
 
-[scriptable, uuid(41d979dc-ea03-4235-86ff-1e3c090c5630)]
+[scriptable, uuid(1f42a6a2-ab0a-45d4-8a96-396f58ea6c6d)]
 interface nsIStyleSheetService : nsISupports
 {
   const unsigned long AGENT_SHEET = 0;
@@ -64,6 +66,9 @@ interface nsIStyleSheetService : nsISupports
    *
    * The relative ordering of two user or two agent sheets loaded via
    * this API is undefined.
+   *
+   * Sheets added via this API take effect on all documents, including
+   * already-loaded ones, immediately.
    */
   void loadAndRegisterSheet(in nsIURI sheetURI, in unsigned long type);
 
@@ -74,9 +79,9 @@ interface nsIStyleSheetService : nsISupports
   boolean sheetRegistered(in nsIURI sheetURI, in unsigned long type);
 
   /**
-   * Remove the style sheet at |sheetURI| from the list of style
-   * sheets specified by |type|.  All documents loaded after
-   * this call will no longer use the style sheet.
+   * Remove the style sheet at |sheetURI| from the list of style sheets
+   * specified by |type|.  The removal takes effect immediately, even for
+   * already-loaded documents.
    */
   void unregisterSheet(in nsIURI sheetURI, in unsigned long type);
 };

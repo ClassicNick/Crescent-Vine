@@ -20,6 +20,9 @@
  * the Initial Developer. All Rights Reserved.
  *
  * Contributor(s):
+ *   Boris Zbarsky <bzbarsky@mit.edu> (original author)
+ *   L. David Baron <dbaron@dbaron.org>, Mozilla Corporation
+ *   Mats Palmgren <mats.palmgren@bredband.net>
  *
  * Alternatively, the contents of this file may be used under the terms of
  * either of the GNU General Public License Version 2 or later (the "GPL"),
@@ -39,18 +42,24 @@
 #define nsLayoutUtils_h__
 
 class nsIFrame;
+class nsIFormControlFrame;
 class nsPresContext;
 class nsIContent;
 class nsIAtom;
 class nsIScrollableView;
 class nsIScrollableFrame;
 class nsIDOMEvent;
+class nsRegion;
+class nsDisplayListBuilder;
+class nsIFontMetrics;
 
 #include "prtypes.h"
 #include "nsStyleContext.h"
 #include "nsAutoPtr.h"
 #include "nsStyleSet.h"
 #include "nsIView.h"
+
+class nsBlockFrame;
 
 /**
  * nsLayoutUtils is a namespace class used for various helper
@@ -83,13 +92,27 @@ public:
 
   /** 
    * Given a frame, search up the frame tree until we find an
-   * ancestor "Page" frame, if any.
+   * ancestor that (or the frame itself) is of type aFrameType, if any.
    *
-   * @param the frame to start at
-   * @return a frame of type nsLayoutAtoms::pageFrame or nsnull if no
+   * @param aFrame the frame to start at
+   * @param aFrameType the frame type to look for
+   * @return a frame of the given type or nsnull if no
    *         such ancestor exists
    */
-  static nsIFrame* GetPageFrame(nsIFrame* aFrame);
+  static nsIFrame* GetClosestFrameOfType(nsIFrame* aFrame, nsIAtom* aFrameType);
+
+  /** 
+   * Given a frame, search up the frame tree until we find an
+   * ancestor that (or the frame itself) is a "Page" frame, if any.
+   *
+   * @param aFrame the frame to start at
+   * @return a frame of type nsGkAtoms::pageFrame or nsnull if no
+   *         such ancestor exists
+   */
+  static nsIFrame* GetPageFrame(nsIFrame* aFrame)
+  {
+    return GetClosestFrameOfType(aFrame, nsGkAtoms::pageFrame);
+  }
 
   /**
    * IsGeneratedContentFor returns PR_TRUE if aFrame is generated
@@ -138,7 +161,45 @@ public:
                                        PRInt32 aIf1Ancestor,
                                        PRInt32 aIf2Ancestor,
                                        nsIContent* aCommonAncestor = nsnull);
-  
+
+  /**
+   * CompareTreePosition determines whether aFrame1 comes before or
+   * after aFrame2 in a preorder traversal of the frame tree, where out
+   * of flow frames are treated as children of their placeholders. This is
+   * basically the same ordering as DoCompareTreePosition(nsIContent*) except
+   * that it handles anonymous content properly and there are subtleties with
+   * continuations.
+   * 
+   * @param aCommonAncestor either null, or a common ancestor of
+   *                        aContent1 and aContent2.  Actually this is
+   *                        only a hint; if it's not an ancestor of
+   *                        aContent1 or aContent2, this function will
+   *                        still work, but it will be slower than
+   *                        normal.
+   * @return < 0 if aContent1 is before aContent2
+   *         > 0 if aContent1 is after aContent2,
+   *         0 otherwise (meaning they're the same, or they're in
+   *           different frame trees)
+   */
+  static PRInt32 CompareTreePosition(nsIFrame* aFrame1,
+                                     nsIFrame* aFrame2,
+                                     nsIFrame* aCommonAncestor = nsnull)
+  {
+    return DoCompareTreePosition(aFrame1, aFrame2, -1, 1, aCommonAncestor);
+  }
+
+  /*
+   * More generic version of |CompareTreePosition|.  |aIf1Ancestor|
+   * gives the value to return when 1 is an ancestor of 2, and likewise
+   * for |aIf2Ancestor|.  Passing (-1, 1) gives preorder traversal
+   * order, and (1, -1) gives postorder traversal order.
+   */
+  static PRInt32 DoCompareTreePosition(nsIFrame* aFrame1,
+                                       nsIFrame* aFrame2,
+                                       PRInt32 aIf1Ancestor,
+                                       PRInt32 aIf2Ancestor,
+                                       nsIFrame* aCommonAncestor = nsnull);
+
   /**
    * GetLastSibling simply finds the last sibling of aFrame, or returns nsnull if
    * aFrame is null.
@@ -155,6 +216,13 @@ public:
   static nsIView* FindSiblingViewFor(nsIView* aParentView, nsIFrame* aFrame);
 
   /**
+   * Get the parent of aFrame. If aFrame is the root frame for a document,
+   * and the document has a parent document in the same view hierarchy, then
+   * we try to return the subdocumentframe in the parent document.
+   */
+  static nsIFrame* GetCrossDocParentFrame(nsIFrame* aFrame);
+  
+  /**
    * IsProperAncestorFrame checks whether aAncestorFrame is an ancestor
    * of aFrame and not equal to aFrame.
    * @param aCommonAncestor nsnull, or a common ancestor of aFrame and
@@ -165,12 +233,18 @@ public:
                                       nsIFrame* aCommonAncestor = nsnull);
 
   /**
+   * Like IsProperAncestorFrame, but looks across document boundaries.
+   */
+  static PRBool IsProperAncestorFrameCrossDoc(nsIFrame* aAncestorFrame, nsIFrame* aFrame,
+                                              nsIFrame* aCommonAncestor = nsnull);
+
+  /**
     * GetFrameFor returns the root frame for a view
     * @param aView is the view to return the root frame for
     * @return the root frame for the view
     */
   static nsIFrame* GetFrameFor(nsIView *aView)
-  { return NS_STATIC_CAST(nsIFrame*, aView->GetClientData()); }
+  { return static_cast<nsIFrame*>(aView->GetClientData()); }
   
   /**
     * GetScrollableFrameFor returns the scrollable frame for a scrollable view
@@ -255,9 +329,22 @@ public:
    * for some reason the coordinates for the mouse are not known (e.g.,
    * the event is not a GUI event).
    */
-  static nsPoint GetDOMEventCoordinatesRelativeTo(nsIDOMEvent* aDOMEvent, nsIFrame* aFrame);
+  static nsPoint GetDOMEventCoordinatesRelativeTo(nsIDOMEvent* aDOMEvent,
+                                                  nsIFrame* aFrame);
 
   /**
+   * Get the coordinates of a given native mouse event, relative to a given
+   * frame.
+   * @param aEvent the event
+   * @param aFrame the frame to make coordinates relative to
+   * @return the point, or (NS_UNCONSTRAINEDSIZE, NS_UNCONSTRAINEDSIZE) if
+   * for some reason the coordinates for the mouse are not known (e.g.,
+   * the event is not a GUI event).
+   */
+  static nsPoint GetEventCoordinatesRelativeTo(const nsEvent* aEvent,
+                                               nsIFrame* aFrame);
+
+/**
    * Get the coordinates of a given native mouse event, relative to the nearest 
    * view for a given frame.
    * The "nearest view" is the view returned by nsFrame::GetOffsetFromView.
@@ -274,7 +361,7 @@ public:
                                                    nsIFrame* aFrame,
                                                    nsIView** aView = nsnull);
 
-  /**
+/**
    * Translate from widget coordinates to the view's coordinates
    * @param aPresContext the PresContext for the view
    * @param aWidget the widget
@@ -286,6 +373,344 @@ public:
                                        nsIWidget* aWidget, nsIntPoint aPt,
                                        nsIView* aView);
 
+  /**
+   * Given aFrame, the root frame of a stacking context, find its descendant
+   * frame under the point aPt that receives a mouse event at that location,
+   * or nsnull if there is no such frame.
+   * @param aPt the point, relative to the frame origin
+   */
+  static nsIFrame* GetFrameForPoint(nsIFrame* aFrame, nsPoint aPt);
+
+  /**
+   * Given aFrame, the root frame of a stacking context, paint it and its
+   * descendants to aRenderingContext. 
+   * @param aRenderingContext a rendering context translated so that (0,0)
+   * is the origin of aFrame
+   * @param aDirtyRegion the region that must be painted, in the coordinates
+   * of aFrame
+   * @param aBackground paint the dirty area with this color before drawing
+   * the actual content; pass NS_RGBA(0,0,0,0) to draw no background
+   */
+  static nsresult PaintFrame(nsIRenderingContext* aRenderingContext, nsIFrame* aFrame,
+                             const nsRegion& aDirtyRegion, nscolor aBackground);
+
+  /**
+   * @param aRootFrame the root frame of the tree to be displayed
+   * @param aMovingFrame a frame that has moved
+   * @param aPt the amount by which aMovingFrame has moved and the rect will
+   * be copied
+   * @param aCopyRect a rectangle that will be copied, relative to aRootFrame
+   * @param aRepaintRegion a subregion of aCopyRect+aDelta that must be repainted
+   * after doing the bitblt
+   * 
+   * Ideally this function would actually have the rect-to-copy as an output
+   * rather than an input, but for now, scroll bitblitting is limited to
+   * the whole of a single widget, so we cannot choose the rect.
+   * 
+   * This function assumes that the caller will do a bitblt copy of aCopyRect
+   * to aCopyRect+aPt. It computes a region that must be repainted in order
+   * for the resulting rendering to be correct.
+   * 
+   * The region consists of:
+   * a) any visible background-attachment:fixed areas in the after-move display
+   * list
+   * b) any visible areas of the before-move display list corresponding to
+   * frames that will not move (translated by aDelta)
+   * c) any visible areas of the after-move display list corresponding to
+   * frames that did not move
+   * d) except that if the same display list element is visible in b) and c)
+   * for a frame that did not move and paints a uniform color within its
+   * bounds, then the intersection of its old and new bounds can be excluded
+   * when it is processed by b) and c).
+   * 
+   * We may return a larger region if computing the above region precisely is
+   * too expensive.
+   */
+  static nsresult ComputeRepaintRegionForCopy(nsIFrame* aRootFrame,
+                                              nsIFrame* aMovingFrame,
+                                              nsPoint aDelta,
+                                              const nsRect& aCopyRect,
+                                              nsRegion* aRepaintRegion);
+
+  /**
+   * Compute the used z-index of aFrame; returns zero for elements to which
+   * z-index does not apply, and for z-index:auto
+   */
+  static PRInt32 GetZIndex(nsIFrame* aFrame);
+
+  /**
+   * Uses a binary search for find where the cursor falls in the line of text
+   * It also keeps track of the part of the string that has already been measured
+   * so it doesn't have to keep measuring the same text over and over
+   *
+   * @param "aBaseWidth" contains the width in twips of the portion 
+   * of the text that has already been measured, and aBaseInx contains
+   * the index of the text that has already been measured.
+   *
+   * @param aTextWidth returns the (in twips) the length of the text that falls
+   * before the cursor aIndex contains the index of the text where the cursor falls
+   */
+  static PRBool
+  BinarySearchForPosition(nsIRenderingContext* acx, 
+                          const PRUnichar* aText,
+                          PRInt32    aBaseWidth,
+                          PRInt32    aBaseInx,
+                          PRInt32    aStartInx, 
+                          PRInt32    aEndInx, 
+                          PRInt32    aCursorPos, 
+                          PRInt32&   aIndex,
+                          PRInt32&   aTextWidth);
+
+  /**
+   * Get the union of all rects in aFrame and its continuations, relative
+   * to aFrame's origin. Scrolling is taken into account, but this shouldn't
+   * matter because it should be impossible to have some continuations scrolled
+   * differently from others.
+   */
+  static nsRect GetAllInFlowBoundingRect(nsIFrame* aFrame);
+
+  /**
+   * Get the font metrics corresponding to the frame's style data.
+   * @param aFrame the frame
+   * @param aFontMetrics the font metrics result
+   * @return success or failure code
+   */
+  static nsresult GetFontMetricsForFrame(nsIFrame* aFrame,
+                                         nsIFontMetrics** aFontMetrics);
+
+  /**
+   * Find the immediate child of aParent whose frame subtree contains
+   * aDescendantFrame. Returns null if aDescendantFrame is not a descendant
+   * of aParent.
+   */
+  static nsIFrame* FindChildContainingDescendant(nsIFrame* aParent, nsIFrame* aDescendantFrame);
+  
+  /**
+   * Find the nearest ancestor that's a block
+   */
+  static nsBlockFrame* FindNearestBlockAncestor(nsIFrame* aFrame);
+  
+  /**
+   * If aFrame is an out of flow frame, return its placeholder, otherwise
+   * return its parent.
+   */
+  static nsIFrame* GetParentOrPlaceholderFor(nsFrameManager* aFrameManager,
+                                             nsIFrame* aFrame);
+
+  /**
+   * Find the closest common ancestor of aFrame1 and aFrame2, following
+   * out of flow frames to their placeholders instead of their parents. Returns
+   * nsnull if the frames are in different frame trees.
+   * 
+   * @param aKnownCommonAncestorHint a frame that is believed to be on the
+   * ancestor chain of both aFrame1 and aFrame2. If null, or a frame that is
+   * not in fact on both ancestor chains, then this function will still return
+   * the correct result, but it will be slower.
+   */
+  static nsIFrame*
+  GetClosestCommonAncestorViaPlaceholders(nsIFrame* aFrame1, nsIFrame* aFrame2,
+                                          nsIFrame* aKnownCommonAncestorHint);
+
+  /**
+   * Get a frame's next-in-flow, or, if it doesn't have one, its special sibling.
+   */
+  static nsIFrame*
+  GetNextContinuationOrSpecialSibling(nsIFrame *aFrame);
+
+  /**
+   * Check whether aFrame is a part of the scrollbar or scrollcorner of
+   * the root content.
+   * @param aFrame the checking frame
+   * @return if TRUE, the frame is a part of the scrollbar or scrollcorner of
+   *         the root content.
+   */
+  static PRBool IsViewportScrollbarFrame(nsIFrame* aFrame);
+
+  /**
+   * Return the value of aStyle as an nscoord if it can be determined without
+   * reference to ancestors or children (e.g. is not a percentage width)
+   * @param aStyle the style coord
+   * @param aRenderingContext the rendering context to use for font measurement
+   * @param aFrame the frame whose style context should be used for font information
+   * @param aResult the nscoord value of the style coord
+   * @return TRUE if the unit is eStyleUnit_Coord or eStyleUnit_Chars
+   */
+  static PRBool GetAbsoluteCoord(const nsStyleCoord& aStyle,
+                                 nsIRenderingContext* aRenderingContext,
+                                 nsIFrame* aFrame,
+                                 nscoord& aResult);
+  /**
+   * Get the contribution of aFrame to its containing block's intrinsic
+   * width.  This considers the child's intrinsic width, its 'width',
+   * 'min-width', and 'max-width' properties, and its padding, border,
+   * and margin.
+   */
+  enum IntrinsicWidthType { MIN_WIDTH, PREF_WIDTH };
+  static nscoord IntrinsicForContainer(nsIRenderingContext* aRenderingContext,
+                                       nsIFrame* aFrame,
+                                       IntrinsicWidthType aType);
+
+  /*
+   * Convert nsStyleCoord to nscoord when percentages depend on the
+   * containing block width.
+   */
+  static nscoord ComputeWidthDependentValue(
+                   nsIRenderingContext* aRenderingContext,
+                   nsIFrame*            aFrame,
+                   nscoord              aContainingBlockWidth,
+                   const nsStyleCoord&  aCoord);
+
+  /*
+   * Convert nsStyleCoord to nscoord when percentages depend on the
+   * containing block width, and enumerated values are for width,
+   * min-width, or max-width.  Returns the content-box width value based
+   * on aContentEdgeToBoxSizing and aBoxSizingToMarginEdge (which are
+   * also used for the enumerated values for width.  This function does
+   * not handle 'auto'.  It ensures that the result is nonnegative.
+   *
+   * @param aRenderingContext Rendering context for font measurement/metrics.
+   * @param aFrame Frame whose (min-/max-/)width is being computed
+   * @param aContainingBlockWidth Width of aFrame's containing block.
+   * @param aContentEdgeToBoxSizing The sum of any left/right padding and
+   *          border that goes inside the rect chosen by -moz-box-sizing.
+   * @param aBoxSizingToMarginEdge The sum of any left/right padding, border,
+   *          and margin that goes outside the rect chosen by -moz-box-sizing.
+   * @param aCoord The width value to compute.
+   */
+  static nscoord ComputeWidthValue(
+                   nsIRenderingContext* aRenderingContext,
+                   nsIFrame*            aFrame,
+                   nscoord              aContainingBlockWidth,
+                   nscoord              aContentEdgeToBoxSizing,
+                   nscoord              aBoxSizingToMarginEdge,
+                   const nsStyleCoord&  aCoord);
+
+  /*
+   * Convert nsStyleCoord to nscoord when percentages depend on the
+   * containing block height.
+   */
+  static nscoord ComputeHeightDependentValue(
+                   nsIRenderingContext* aRenderingContext,
+                   nsIFrame*            aFrame,
+                   nscoord              aContainingBlockHeight,
+                   const nsStyleCoord&  aCoord);
+
+  static nsSize ComputeSizeWithIntrinsicDimensions(
+                    nsIRenderingContext* aRenderingContext,
+                    nsIFrame* aFrame, nsSize aIntrinsicSize, nsSize aCBSize,
+                    nsSize aMargin, nsSize aBorder, nsSize aPadding);
+
+  // Implement nsIFrame::GetPrefWidth in terms of nsIFrame::AddInlinePrefWidth
+  static nscoord PrefWidthFromInline(nsIFrame* aFrame,
+                                     nsIRenderingContext* aRenderingContext);
+
+  // Implement nsIFrame::GetMinWidth in terms of nsIFrame::AddInlineMinWidth
+  static nscoord MinWidthFromInline(nsIFrame* aFrame,
+                                    nsIRenderingContext* aRenderingContext);
+
+  static void DrawString(const nsIFrame*      aFrame,
+                         nsIRenderingContext* aContext,
+                         const PRUnichar*     aString,
+                         PRInt32              aLength,
+                         nsPoint              aPoint);
+
+  static nscoord GetStringWidth(const nsIFrame*      aFrame,
+                                nsIRenderingContext* aContext,
+                                const PRUnichar*     aString,
+                                PRInt32              aLength);
+
+  /**
+   * Derive a baseline of |aFrame| (measured from its top border edge)
+   * from its first in-flow line box (not descending into anything with
+   * 'overflow' not 'visible', potentially including aFrame itself).
+   *
+   * Returns true if a baseline was found (and fills in aResult).
+   * Otherwise returns false.
+   */
+  static PRBool GetFirstLineBaseline(const nsIFrame* aFrame, nscoord* aResult);
+
+  /**
+   * Derive a baseline of |aFrame| (measured from its top border edge)
+   * from its last in-flow line box (not descending into anything with
+   * 'overflow' not 'visible', potentially including aFrame itself).
+   *
+   * Returns true if a baseline was found (and fills in aResult).
+   * Otherwise returns false.
+   */
+  static PRBool GetLastLineBaseline(const nsIFrame* aFrame, nscoord* aResult);
+
+  /**
+   * Gets the closest frame (the frame passed in or one of its parents) that
+   * qualifies as a "layer"; used in DOM0 methods that depends upon that
+   * definition. This is the nearest frame that is either positioned or scrolled
+   * (the child of a scroll frame). In Gecko terms, it's approximately
+   * equivalent to having a view, at least for simple HTML. However, views are
+   * going away, so this is a cleaner definition.
+   */
+  static nsIFrame* GetClosestLayer(nsIFrame* aFrame);
+
+  /**
+   * Draw a single image.
+   *   @param aImage            The image.
+   *   @param aRenderingContext Where to draw the image, set up with an
+   *                            appropriate scale and transform for drawing in
+   *                            app units (aDestRect).
+   *   @param aDestRect         Where to draw the image (app units).
+   *   @param aDirtyRect        Draw only within this region (rounded to the
+   *                            nearest pixel); the intersection of
+   *                            invalidation and clipping.
+   *   @param aSourceRect       If null, draw the entire image so it fits in
+   *                            aDestRect.  If non-null, the subregion of the
+   *                            image that should be drawn (in app units, such
+   *                            that converting it to CSS pixels yields image
+   *                            pixels).
+   */
+  static nsresult DrawImage(nsIRenderingContext* aRenderingContext,
+                            imgIContainer* aImage,
+                            const nsRect& aDestRect,
+                            const nsRect& aDirtyRect,
+                            const nsRect* aSourceRect = nsnull);
+
+  /**
+   * Set the font on aRC based on the style in aSC
+   */
+  static void SetFontFromStyle(nsIRenderingContext* aRC, nsStyleContext* aSC);
+
+  /**
+   * Convert an eStyleUnit_Chars nsStyleCoord to an nscoord.
+   *
+   * @param aStyle the style coord
+   * @param aRenderingContext the rendering context to use for font measurement
+   * @param aStyleContext the style context to use for font infomation
+   */
+  static nscoord CharsToCoord(const nsStyleCoord& aStyle,
+                              nsIRenderingContext* aRenderingContext,
+                              nsStyleContext* aStyleContext);
+
+  /**
+   * Determine if any style coordinate is nonzero
+   *   @param aCoord the style sides
+   *   @return PR_TRUE unless all the coordinates are 0%, 0 or null.
+   */
+  static PRBool HasNonZeroSide(const nsStyleSides& aSides);
+
+  /**
+   * Determine if a widget is likely to require transparency or translucency.
+   *   @param aFrame the frame of a <window>, <popup> or <menupopup> element.
+   *   @return a value suitable for passing to SetWindowTranslucency
+   */
+  static PRBool FrameHasTransparency(nsIFrame* aFrame);
+
+  /**
+   * Get textrun construction flags determined by a given style; in particular
+   * some combination of:
+   * -- TEXT_DISABLE_OPTIONAL_LIGATURES if letter-spacing is in use
+   * -- TEXT_OPTIMIZE_SPEED if the text-rendering CSS property and font size
+   * and prefs indicate we should be optimizing for speed over quality
+   */
+  static PRUint32 GetTextRunFlagsForStyle(nsStyleContext* aStyleContext,
+                                          const nsStyleText* aStyleText,
+                                          const nsStyleFont* aStyleFont);
 };
 
 #endif // nsLayoutUtils_h__

@@ -36,6 +36,8 @@
  *
  * ***** END LICENSE BLOCK ***** */
 
+/* implementation of CSS counters (for numbering things) */
+
 #include "nsCounterManager.h"
 #include "nsBulletFrame.h" // legacy location for list style type to text code
 #include "nsContentUtils.h"
@@ -70,7 +72,7 @@ nsCounterUseNode::GetText(nsString& aResult)
     aResult.Truncate();
 
     nsAutoVoidArray stack;
-    stack.AppendElement(NS_STATIC_CAST(nsCounterNode*, this));
+    stack.AppendElement(static_cast<nsCounterNode*>(this));
 
     if (mAllCounters && mScopeStart)
         for (nsCounterNode *n = mScopeStart; n->mScopePrev; n = n->mScopeStart)
@@ -82,11 +84,11 @@ nsCounterUseNode::GetText(nsString& aResult)
         separator = mCounterStyle->Item(1).GetStringBufferValue();
 
     for (PRInt32 i = stack.Count() - 1;; --i) {
-        nsCounterNode *n = NS_STATIC_CAST(nsCounterNode*, stack[i]);
+        nsCounterNode *n = static_cast<nsCounterNode*>(stack[i]);
         nsBulletFrame::AppendCounterText(style, n->mValueAfter, aResult);
         if (i == 0)
             break;
-        NS_ASSERTION(mAllCounters, "yikes, separator is uninitalized");
+        NS_ASSERTION(mAllCounters, "yikes, separator is uninitialized");
         aResult.Append(separator);
     }
 }
@@ -235,6 +237,7 @@ nsCounterManager::AddResetOrIncrement(nsIFrame *aFrame, PRInt32 aIndex,
     if (!counterList->IsLast(node)) {
         // Tell the caller it's responsible for recalculating the entire
         // list.
+        counterList->SetDirty();
         return PR_TRUE;
     }
 
@@ -292,7 +295,7 @@ struct DestroyNodesData {
 PR_STATIC_CALLBACK(PLDHashOperator)
 DestroyNodesInList(const nsAString& aKey, nsCounterList* aList, void* aClosure)
 {
-    DestroyNodesData *data = NS_STATIC_CAST(DestroyNodesData*, aClosure);
+    DestroyNodesData *data = static_cast<DestroyNodesData*>(aClosure);
     if (aList->DestroyNodesFor(data->mFrame)) {
         data->mDestroyedAny = PR_TRUE;
         aList->SetDirty();

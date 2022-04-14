@@ -1,4 +1,5 @@
 /* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=2 sw=2 et tw=78: */
 /* ***** BEGIN LICENSE BLOCK *****
  * Version: MPL 1.1/GPL 2.0/LGPL 2.1
  *
@@ -35,13 +36,15 @@
  *
  * ***** END LICENSE BLOCK ***** */
 
+/* the caret is the text cursor used, e.g., when editing */
+
 #ifndef nsICaret_h__
 #define nsICaret_h__
 
 #include "nsISupports.h"
 #include "nsCOMPtr.h"
 #include "nsCoord.h"
-#include "nsIFrameSelection.h"
+#include "nsFrameSelection.h"
 
 struct nsRect;
 struct nsPoint;
@@ -54,15 +57,15 @@ class nsISelection;
 class nsIDOMNode;
 
 // IID for the nsICaret interface
-// dcb01833-509d-4fcb-8f7f-6beb006261b9
+// 6226083a-84e4-4177-94a0-f3b399dfeebf
 #define NS_ICARET_IID \
-{ 0xdcb01833, 0x509d, 0x4fcb, \
-  { 0x8f, 0x7f, 0x6b, 0xeb, 0x00, 0x62, 0x61, 0xb9 } }
+{ 0x6226083a, 0x84e4, 0x4177, \
+  { 0x94, 0xa0, 0xf3, 0xb3, 0x99, 0xdf, 0xee, 0xbf } }
 
 class nsICaret: public nsISupports
 {
 public:
-  NS_DEFINE_STATIC_IID_ACCESSOR(NS_ICARET_IID)
+  NS_DECLARE_STATIC_IID_ACCESSOR(NS_ICARET_IID)
 
   enum EViewCoordinates {
       eTopLevelWindowCoordinates,
@@ -93,14 +96,21 @@ public:
    */
   NS_IMETHOD SetCaretReadOnly(PRBool inMakeReadonly) = 0;
 
+  virtual PRBool GetCaretReadOnly() = 0;
+
   /** GetCaretCoordinates
-   *  Get the position of the caret in coordinates relative to the typed specified (aRelativeToType).
+   *  Get the position of the caret in coordinates relative to the typed
+   *  specified (aRelativeToType).
    *  If the selection is collapsed, this returns the caret location
    *    and true in outIsCollapsed.
    *  If the selection is not collapsed, this returns the location of the focus pos,
    *    and false in outIsCollapsed.
    */
-  NS_IMETHOD GetCaretCoordinates(EViewCoordinates aRelativeToType, nsISelection *aDOMSel, nsRect *outCoordinates, PRBool *outIsCollapsed, nsIView **outView) = 0;
+  NS_IMETHOD GetCaretCoordinates(EViewCoordinates aRelativeToType,
+                                 nsISelection *aDOMSel,
+                                 nsRect *outCoordinates,
+                                 PRBool *outIsCollapsed,
+                                 nsIView **outView) = 0;
 
   /** Erase Caret
    *  this will erase the caret if its drawn and reset drawn status
@@ -119,13 +129,58 @@ public:
   NS_IMETHOD DrawAtPosition(nsIDOMNode* aNode, PRInt32 aOffset) = 0;
 
   /** GetCaretFrameForNodeOffset
-    *  Get the frame and content offset at which the caret is drawn,
-    *  invoking the bidi caret positioning algorithm if necessary
-    **/
-  NS_IMETHOD GetCaretFrameForNodeOffset (nsIContent* aContentNode, PRInt32 aOffset, nsIFrameSelection::HINT aFrameHint, PRUint8 aBidiLevel,
-                                         nsIFrame** aReturnFrame, PRInt32* aReturnOffset) = 0;
-    
+   *  Get the frame and content offset at which the caret is drawn,
+   *  invoking the bidi caret positioning algorithm if necessary
+   **/
+  NS_IMETHOD GetCaretFrameForNodeOffset(nsIContent* aContentNode,
+                                        PRInt32 aOffset,
+                                        nsFrameSelection::HINT aFrameHint,
+                                        PRUint8 aBidiLevel,
+                                        nsIFrame** aReturnFrame,
+                                        PRInt32* aReturnOffset) = 0;
+
+  /** GetCaretFrame
+   *  Get the current frame that the caret should be drawn in. If the caret is
+   *  not currently visible (i.e., it is between blinks), then this will
+   *  return null.
+   */
+  virtual nsIFrame *GetCaretFrame() = 0;
+
+  /** GetCaretRect
+   *  Get the current caret rect. Only call this when GetCaretFrame returns
+   *  non-null.
+   */
+  virtual nsRect GetCaretRect() = 0;
+
+  /** GetCaretContent
+   *  Get the content that the caret was last drawn in.
+   */
+  virtual nsIContent* GetCaretContent() = 0;
+
+  /** InvalidateOutsideCaret
+   *  Invalidate the area that the caret currently occupies if the caret is
+   *  outside of its frame's overflow area. This is used when the content that
+   *  the caret is currently drawn is is being deleted or reflowed.
+   */
+  virtual void InvalidateOutsideCaret() = 0;
+
+  /** UpdateCaretPosition
+   *  Update the caret's current frame and rect, but don't draw yet. This is
+   *  useful for flickerless moving of the caret (e.g., when the frame the
+   *  caret is in reflows and is moved).
+   */
+  virtual void UpdateCaretPosition() = 0;
+
+  /** PaintCaret
+   *  Actually paint the caret onto the given rendering context.
+   */
+  virtual void PaintCaret(nsDisplayListBuilder *aBuilder,
+                          nsIRenderingContext *aCtx,
+                          const nsPoint &aOffset,
+                          nscolor aColor) = 0;
 };
+
+NS_DEFINE_STATIC_IID_ACCESSOR(nsICaret, NS_ICARET_IID)
 
 nsresult
 NS_NewCaret(nsICaret** aInstancePtrResult);

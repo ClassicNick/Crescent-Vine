@@ -34,6 +34,9 @@
  * the terms of any one of the MPL, the GPL or the LGPL.
  *
  * ***** END LICENSE BLOCK ***** */
+
+/* constants for what needs to be recomputed in response to style changes */
+
 #ifndef nsChangeHint_h___
 #define nsChangeHint_h___
 
@@ -104,7 +107,7 @@ inline PRBool NS_IsHintSubset(nsChangeHint aSubset, nsChangeHint aSuperSet) {
 /**
  * |nsReStyleHint| is a bitfield for the result of |HasStateDependentStyle|
  * and |HasAttributeDependentStyle|.  All values have an implied "and
- * descendants."  When no restyling is necesary, use |nsReStyleHint(0)|.
+ * descendants."  When no restyling is necessary, use |nsReStyleHint(0)|.
  */
 enum nsReStyleHint {
   eReStyle_Self = 0x1,

@@ -36,6 +36,8 @@
  *
  * ***** END LICENSE BLOCK ***** */
 
+/* implementation of quotes for the CSS 'content' property */
+
 #include "nsQuoteList.h"
 #include "nsReadableUtils.h"
 
@@ -107,7 +109,7 @@ nsQuoteList::PrintChain()
   }
   nsQuoteNode* node = FirstNode();
   do {
-    printf("  %p %d - ", NS_STATIC_CAST(void*, node), node->mDepthBefore);
+    printf("  %p %d - ", static_cast<void*>(node), node->mDepthBefore);
     switch(node->mType) {
         case (eStyleContentType_OpenQuote):
           printf("open");
@@ -128,7 +130,7 @@ nsQuoteList::PrintChain()
     if (node->mText) {
       nsAutoString data;
       node->mText->GetData(data);
-      printf(" \"%s\",", NS_ConvertUCS2toUTF8(data).get());
+      printf(" \"%s\",", NS_ConvertUTF16toUTF8(data).get());
     }
     printf("\n");
     node = Next(node);

@@ -34,6 +34,9 @@
  * the terms of any one of the MPL, the GPL or the LGPL.
  *
  * ***** END LICENSE BLOCK ***** */
+
+/* base class for nsCounterList and nsQuoteList */
+
 #ifndef nsGenConList_h___
 #define nsGenConList_h___
 
@@ -92,10 +95,10 @@ public:
   ~nsGenConList() { Clear(); }
   void Clear();
   static nsGenConNode* Next(nsGenConNode* aNode) {
-    return NS_STATIC_CAST(nsGenConNode*, PR_NEXT_LINK(aNode));
+    return static_cast<nsGenConNode*>(PR_NEXT_LINK(aNode));
   }
   static nsGenConNode* Prev(nsGenConNode* aNode) {
-    return NS_STATIC_CAST(nsGenConNode*, PR_PREV_LINK(aNode));
+    return static_cast<nsGenConNode*>(PR_PREV_LINK(aNode));
   }
   void Insert(nsGenConNode* aNode);
   // returns whether any nodes have been destroyed
