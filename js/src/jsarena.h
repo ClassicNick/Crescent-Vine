@@ -88,17 +88,19 @@ struct JSArenaPool {
     JSArena     *current;       /* arena from which to allocate space */
     size_t      arenasize;      /* net exact size of a new arena */
     jsuword     mask;           /* alignment mask (power-of-2 - 1) */
+    size_t      *quotap;        /* pointer to the quota on pool allocation
+                                   size or null if pool is unlimited */
 #ifdef JS_ARENAMETER
     JSArenaStats stats;
 #endif
 };
 
 #ifdef JS_ARENAMETER
-#define JS_INIT_NAMED_ARENA_POOL(pool, name, size, align)                     \
-    JS_InitArenaPool(pool, name, size, align)
+#define JS_INIT_NAMED_ARENA_POOL(pool, name, size, align, quotap)             \
+    JS_InitArenaPool(pool, name, size, align, quotap)
 #else
-#define JS_INIT_NAMED_ARENA_POOL(pool, name, size, align)                     \
-    JS_InitArenaPool(pool, size, align)
+#define JS_INIT_NAMED_ARENA_POOL(pool, name, size, align, quotap)             \
+    JS_InitArenaPool(pool, size, align, quotap)
 #endif
 
 /*
@@ -110,14 +112,15 @@ struct JSArenaPool {
 #define JS_ARENA_ALIGN(pool, n) (((jsuword)(n) + JS_ARENA_CONST_ALIGN_MASK)   \
                                  & ~(jsuword)JS_ARENA_CONST_ALIGN_MASK)
 
-#define JS_INIT_ARENA_POOL(pool, name, size)                                  \
-    JS_INIT_NAMED_ARENA_POOL(pool, name, size, JS_ARENA_CONST_ALIGN_MASK + 1)
+#define JS_INIT_ARENA_POOL(pool, name, size, quotap)                          \
+    JS_INIT_NAMED_ARENA_POOL(pool, name, size, JS_ARENA_CONST_ALIGN_MASK + 1, \
+                             quotap)
 
 #else
 #define JS_ARENA_ALIGN(pool, n) (((jsuword)(n) + (pool)->mask) & ~(pool)->mask)
 
-#define JS_INIT_ARENA_POOL(pool, name, size, align)                           \
-    JS_INIT_NAMED_ARENA_POOL(pool, name, size, align)
+#define JS_INIT_ARENA_POOL(pool, name, size, align, quotap)                   \
+    JS_INIT_NAMED_ARENA_POOL(pool, name, size, align, quotap)
 
 #endif
 
@@ -179,6 +182,12 @@ struct JSArenaPool {
 #define JS_ARENA_MARK(pool)     ((void *) (pool)->current->avail)
 #define JS_UPTRDIFF(p,q)        ((jsuword)(p) - (jsuword)(q))
 
+/*
+ * Check if the mark is inside arena's allocated area.
+ */
+#define JS_ARENA_MARK_MATCH(a, mark)                                          \
+    (JS_UPTRDIFF(mark, (a)->base) <= JS_UPTRDIFF((a)->avail, (a)->base))
+
 #ifdef DEBUG
 #define JS_FREE_PATTERN         0xDA
 #define JS_CLEAR_UNUSED(a)      (JS_ASSERT((a)->avail <= (a)->limit),         \
@@ -195,8 +204,7 @@ struct JSArenaPool {
     JS_BEGIN_MACRO                                                            \
         char *_m = (char *)(mark);                                            \
         JSArena *_a = (pool)->current;                                        \
-        if (_a != &(pool)->first &&                                           \
-            JS_UPTRDIFF(_m, _a->base) <= JS_UPTRDIFF(_a->avail, _a->base)) {  \
+        if (_a != &(pool)->first && JS_ARENA_MARK_MATCH(_a, _m)) {            \
             _a->avail = (jsuword)JS_ARENA_ALIGN(pool, _m);                    \
             JS_ASSERT(_a->avail <= _a->limit);                                \
             JS_CLEAR_UNUSED(_a);                                              \
@@ -230,7 +238,7 @@ struct JSArenaPool {
  */
 extern JS_PUBLIC_API(void)
 JS_INIT_NAMED_ARENA_POOL(JSArenaPool *pool, const char *name, size_t size,
-                         size_t align);
+                         size_t align, size_t *quotap);
 
 /*
  * Free the arenas in pool.  The user may continue to allocate from pool
@@ -311,6 +319,18 @@ JS_DumpArenaStats(FILE *fp);
 #define JS_ArenaCountRetract(ap, mark)                  /* nothing */
 
 #endif /* !JS_ARENAMETER */
+
+#ifdef DEBUG
+
+/*
+ * Debug-only function to return true if mark was taken after guardMark
+ * calling JS_ARENA_RELEASE(pool, mark) does not affect allocations done
+ * before guardMark.
+ */
+extern JSBool
+js_GuardedArenaMark(JSArenaPool *pool, void *mark, void *guardMark);
+
+#endif
 
 JS_END_EXTERN_C
 

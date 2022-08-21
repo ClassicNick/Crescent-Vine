@@ -53,12 +53,10 @@ JS_BEGIN_EXTERN_C
 #define GCX_OBJECT              0               /* JSObject */
 #define GCX_STRING              1               /* JSString */
 #define GCX_DOUBLE              2               /* jsdouble */
-#define GCX_MUTABLE_STRING      3               /* JSString that's mutable --
-                                                   single-threaded only! */
-#define GCX_PRIVATE             4               /* private (unscanned) data */
-#define GCX_NAMESPACE           5               /* JSXMLNamespace */
-#define GCX_QNAME               6               /* JSXMLQName */
-#define GCX_XML                 7               /* JSXML */
+#define GCX_FUNCTION            3               /* JSFunction */
+#define GCX_NAMESPACE           4               /* JSXMLNamespace */
+#define GCX_QNAME               5               /* JSXMLQName */
+#define GCX_XML                 6               /* JSXML */
 #define GCX_EXTERNAL_STRING     8               /* JSString w/ external chars */
 
 #define GCX_NTYPES_LOG2         4               /* type index bits */
@@ -68,16 +66,8 @@ JS_BEGIN_EXTERN_C
 #define GCF_TYPEMASK    JS_BITMASK(GCX_NTYPES_LOG2)
 #define GCF_MARK        JS_BIT(GCX_NTYPES_LOG2)
 #define GCF_FINAL       JS_BIT(GCX_NTYPES_LOG2 + 1)
-#define GCF_SYSTEM      JS_BIT(GCX_NTYPES_LOG2 + 2)
-#define GCF_LOCKSHIFT   (GCX_NTYPES_LOG2 + 3)   /* lock bit shift */
+#define GCF_LOCKSHIFT   (GCX_NTYPES_LOG2 + 2)   /* lock bit shift */
 #define GCF_LOCK        JS_BIT(GCF_LOCKSHIFT)   /* lock request bit in API */
-
-/* Pseudo-flag that modifies GCX_STRING to make GCX_MUTABLE_STRING. */
-#define GCF_MUTABLE     2
-
-#if (GCX_STRING | GCF_MUTABLE) != GCX_MUTABLE_STRING
-# error "mutable string type index botch!"
-#endif
 
 extern JS_FRIEND_API(uint8 *)
 js_GetGCThingFlags(void *thing);
@@ -100,15 +90,15 @@ js_GetGCStringRuntime(JSString *str);
 #define GC_POKE(cx, oldval) ((cx)->runtime->gcPoke = JSVAL_IS_GCTHING(oldval))
 #endif
 
-extern intN
-js_ChangeExternalStringFinalizer(JSStringFinalizeOp oldop,
-                                 JSStringFinalizeOp newop);
-
 extern JSBool
 js_InitGC(JSRuntime *rt, uint32 maxbytes);
 
 extern void
 js_FinishGC(JSRuntime *rt);
+
+extern intN
+js_ChangeExternalStringFinalizer(JSStringFinalizeOp oldop,
+                                 JSStringFinalizeOp newop);
 
 extern JSBool
 js_AddRoot(JSContext *cx, void *rp, const char *name);
@@ -138,41 +128,6 @@ typedef struct JSPtrTable {
 extern JSBool
 js_RegisterCloseableIterator(JSContext *cx, JSObject *obj);
 
-#if JS_HAS_GENERATORS
-
-/*
- * Runtime state to support generators' close hooks.
- */
-typedef struct JSGCCloseState {
-    /*
-     * Singly linked list of generators that are reachable from GC roots or
-     * were created after the last GC.
-     */
-    JSGenerator         *reachableList;
-
-    /*
-     * Head of the queue of generators that have already become unreachable but
-     * whose close hooks are not yet run.
-     */
-    JSGenerator         *todoQueue;
-
-#ifndef JS_THREADSAFE
-    /*
-     * Flag indicating that the current thread is excuting a close hook for
-     * single thread case.
-     */
-    JSBool              runningCloseHook;
-#endif
-} JSGCCloseState;
-
-extern void
-js_RegisterGenerator(JSContext *cx, JSGenerator *gen);
-
-extern JSBool
-js_RunCloseHooks(JSContext *cx);
-
-#endif
-
 /*
  * The private JSGCThing struct, which describes a gcFreeList element.
  */
@@ -186,6 +141,12 @@ struct JSGCThing {
 #define GC_FREELIST_NBYTES(i)   (((i) + 1) * sizeof(JSGCThing))
 #define GC_FREELIST_INDEX(n)    (((n) / sizeof(JSGCThing)) - 1)
 
+/*
+ * Allocates a new GC thing of the given size. After a successful allocation
+ * the caller must fully initialize the thing before calling any function that
+ * can potentially trigger GC. This will ensure that GC tracing never sees junk
+ * values stored in the partially initialized thing.
+ */
 extern void *
 js_NewGCThing(JSContext *cx, uintN flags, size_t nbytes);
 
@@ -203,23 +164,28 @@ js_IsAboutToBeFinalized(JSContext *cx, void *thing);
 
 /*
  * Macro to test if a traversal is the marking phase of GC to avoid exposing
- * JSAtom and ScriptFilenameEntry to traversal implementations.
+ * ScriptFilenameEntry to traversal implementations.
  */
 #define IS_GC_MARKING_TRACER(trc) ((trc)->callback == NULL)
 
 JS_STATIC_ASSERT(JSTRACE_STRING == 2);
 
 #define JSTRACE_FUNCTION    3
-#define JSTRACE_ATOM        4
-#define JSTRACE_NAMESPACE   5
-#define JSTRACE_QNAME       6
-#define JSTRACE_XML         7
+#define JSTRACE_NAMESPACE   4
+#define JSTRACE_QNAME       5
+#define JSTRACE_XML         6
 
 #if JS_HAS_XML_SUPPORT
 # define JS_IS_VALID_TRACE_KIND(kind) ((uint32)(kind) <= JSTRACE_XML)
 #else
-# define JS_IS_VALID_TRACE_KIND(kind) ((uint32)(kind) <= JSTRACE_ATOM)
+# define JS_IS_VALID_TRACE_KIND(kind) ((uint32)(kind) <= JSTRACE_FUNCTION)
 #endif
+
+/*
+ * JS_IS_VALID_TRACE_KIND assumes that JSTRACE_FUNCTION is the last non-xml
+ * trace kind when JS_HAS_XML_SUPPORT is false.
+ */
+JS_STATIC_ASSERT(JSTRACE_FUNCTION + 1 == JSTRACE_NAMESPACE);
 
 /*
  * Trace jsval when JSVAL_IS_OBJECT(v) can be an arbitrary GC thing casted as
@@ -287,14 +253,14 @@ typedef struct JSGCStats {
     uint32  maxdepth;   /* maximum mark tail recursion depth */
     uint32  cdepth;     /* mark recursion depth of C functions */
     uint32  maxcdepth;  /* maximum mark recursion depth of C functions */
-    uint32  unscanned;  /* mark C stack overflows or number of times
-                           GC things were put in unscanned bag */
+    uint32  untraced;   /* number of times tracing of GC thing's children were
+                           delayed due to a low C stack */
 #ifdef DEBUG
-    uint32  maxunscanned;       /* maximum size of unscanned bag */
+    uint32  maxuntraced;/* maximum number of things with children to trace
+                           later */
 #endif
     uint32  maxlevel;   /* maximum GC nesting (indirect recursion) level */
     uint32  poke;       /* number of potentially useful GC calls */
-    uint32  nopoke;     /* useless GC calls where js_PokeGC was not set */
     uint32  afree;      /* thing arenas freed so far */
     uint32  stackseg;   /* total extraordinary stack segments scanned */
     uint32  segslots;   /* total stack segment jsval slots scanned */
@@ -309,8 +275,9 @@ js_DumpGCStats(JSRuntime *rt, FILE *fp);
 
 #endif /* JS_GCMETER */
 
-typedef struct JSGCArena JSGCArena;
+typedef struct JSGCArenaInfo JSGCArenaInfo;
 typedef struct JSGCArenaList JSGCArenaList;
+typedef struct JSGCChunkInfo JSGCChunkInfo;
 
 #ifdef JS_GCMETER
 typedef struct JSGCArenaStats JSGCArenaStats;
@@ -331,26 +298,27 @@ struct JSGCArenaStats {
 #endif
 
 struct JSGCArenaList {
-    JSGCArena   *last;          /* last allocated GC arena */
-    uint16      lastLimit;      /* end offset of allocated so far things in
-                                   the last arena */
-    uint16      thingSize;      /* size of things to allocate on this list */
-    JSGCThing   *freeList;      /* list of free GC things */
+    JSGCArenaInfo   *last;          /* last allocated GC arena */
+    uint16          lastCount;      /* number of allocated things in the last
+                                       arena */
+    uint16          thingSize;      /* size of things to allocate on this list
+                                     */
+    JSGCThing       *freeList;      /* list of free GC things */
 #ifdef JS_GCMETER
-    JSGCArenaStats stats;
+    JSGCArenaStats  stats;
 #endif
 };
 
-typedef struct JSWeakRoots {
+struct JSWeakRoots {
     /* Most recently created things by type, members of the GC's root set. */
-    JSGCThing           *newborn[GCX_NTYPES];
+    void            *newborn[GCX_NTYPES];
 
     /* Atom root for the last-looked-up atom on this context. */
-    JSAtom              *lastAtom;
+    jsval           lastAtom;
 
     /* Root for the result of the most recent js_InternalInvoke call. */
-    jsval               lastInternalResult;
-} JSWeakRoots;
+    jsval           lastInternalResult;
+};
 
 JS_STATIC_ASSERT(JSVAL_NULL == 0);
 #define JS_CLEAR_WEAK_ROOTS(wr) (memset((wr), 0, sizeof(JSWeakRoots)))

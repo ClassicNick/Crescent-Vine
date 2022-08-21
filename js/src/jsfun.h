@@ -49,17 +49,19 @@ JS_BEGIN_EXTERN_C
 
 struct JSFunction {
     JSObject     *object;       /* back-pointer to GC'ed object header */
-    uint16       nargs;         /* minimum number of actual arguments */
+    uint16       nargs;         /* maximum number of specified arguments,
+                                   reflected as f.length/f.arity */
     uint16       flags;         /* bound method and other flags, see jsapi.h */
     union {
         struct {
             uint16   extra;     /* number of arg slots for local GC roots */
-            uint16   spare;     /* reserved for future use */
+            uint16   minargs;   /* minimum number of specified arguments, used
+                                   only when calling fast native */
             JSNative native;    /* native method pointer or null */
         } n;
         struct {
             uint16   nvars;     /* number of local variables */
-            uint16   nregexps;  /* number of regular expressions literals */
+            uint16   spare;     /* reserved for future use */
             JSScript *script;   /* interpreted bytecode descriptor or null */
         } i;
     } u;
@@ -70,9 +72,18 @@ struct JSFunction {
 #define JSFUN_EXPR_CLOSURE   0x4000 /* expression closure: function(x)x*x */
 #define JSFUN_INTERPRETED    0x8000 /* use u.i if set, u.n if unset */
 
+#define JSFUN_SCRIPT_OR_FAST_NATIVE (JSFUN_INTERPRETED | JSFUN_FAST_NATIVE)
+
 #define FUN_INTERPRETED(fun) ((fun)->flags & JSFUN_INTERPRETED)
-#define FUN_NATIVE(fun)      (FUN_INTERPRETED(fun) ? NULL : (fun)->u.n.native)
+#define FUN_SLOW_NATIVE(fun) (!((fun)->flags & JSFUN_SCRIPT_OR_FAST_NATIVE))
 #define FUN_SCRIPT(fun)      (FUN_INTERPRETED(fun) ? (fun)->u.i.script : NULL)
+#define FUN_NATIVE(fun)      (FUN_SLOW_NATIVE(fun) ? (fun)->u.n.native : NULL)
+#define FUN_FAST_NATIVE(fun) (((fun)->flags & JSFUN_FAST_NATIVE)              \
+                              ? (JSFastNative) (fun)->u.n.native              \
+                              : NULL)
+#define FUN_MINARGS(fun)     (((fun)->flags & JSFUN_FAST_NATIVE)              \
+                              ? (fun)->u.n.minargs                            \
+                              : (fun)->nargs)
 
 extern JSClass js_ArgumentsClass;
 extern JSClass js_CallClass;
@@ -87,10 +98,6 @@ extern JS_FRIEND_DATA(JSClass) js_FunctionClass;
     (!JSVAL_IS_PRIMITIVE(v) &&                                                \
      OBJ_GET_CLASS(cx, JSVAL_TO_OBJECT(v)) == &js_FunctionClass)
 
-extern JSBool
-js_fun_toString(JSContext *cx, JSObject *obj, uint32 indent,
-                uintN argc, jsval *argv, jsval *rval);
-
 extern JSObject *
 js_InitFunctionClass(JSContext *cx, JSObject *obj);
 
@@ -103,6 +110,9 @@ js_InitCallClass(JSContext *cx, JSObject *obj);
 extern JSFunction *
 js_NewFunction(JSContext *cx, JSObject *funobj, JSNative native, uintN nargs,
                uintN flags, JSObject *parent, JSAtom *atom);
+
+extern void
+js_FinalizeFunction(JSContext *cx, JSFunction *fun);
 
 extern JSObject *
 js_CloneFunctionObject(JSContext *cx, JSObject *funobj, JSObject *parent);
@@ -151,8 +161,7 @@ extern JSBool
 js_GetArgsValue(JSContext *cx, JSStackFrame *fp, jsval *vp);
 
 extern JSBool
-js_GetArgsProperty(JSContext *cx, JSStackFrame *fp, jsid id,
-                   JSObject **objp, jsval *vp);
+js_GetArgsProperty(JSContext *cx, JSStackFrame *fp, jsid id, jsval *vp);
 
 extern JSObject *
 js_GetArgsObject(JSContext *cx, JSStackFrame *fp);

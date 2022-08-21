@@ -204,9 +204,10 @@ js_DestroyScope(JSContext *cx, JSScope *scope)
 #ifdef DUMP_SCOPE_STATS
 typedef struct JSScopeStats {
     jsrefcount          searches;
-    jsrefcount          steps;
     jsrefcount          hits;
     jsrefcount          misses;
+    jsrefcount          hashes;
+    jsrefcount          steps;
     jsrefcount          stepHits;
     jsrefcount          stepMisses;
     jsrefcount          adds;
@@ -228,13 +229,22 @@ JS_FRIEND_DATA(JSScopeStats) js_scope_stats;
 # define METER(x)       /* nothing */
 #endif
 
+JS_STATIC_ASSERT(sizeof(JSHashNumber) == 4);
+JS_STATIC_ASSERT(sizeof(jsid) == JS_BYTES_PER_WORD);
+
+#if JS_BYTES_PER_WORD == 4
+# define HASH_ID(id) ((JSHashNumber)(id))
+#elif JS_BYTES_PER_WORD == 8
+# define HASH_ID(id) ((JSHashNumber)(id) ^ (JSHashNumber)((id) >> 32))
+#else
+# error "Unsupported configuration"
+#endif
+
 /*
  * Double hashing needs the second hash code to be relatively prime to table
  * size, so we simply make hash2 odd.  The inputs to multiplicative hash are
- * the golden ratio, expressed as a fixed-point 32 bit fraction, and the int
- * property index or named property's atom number (observe that most objects
- * have either no indexed properties, or almost all indexed and a few names,
- * so collisions between index and atom number are unlikely).
+ * the golden ratio, expressed as a fixed-point 32 bit fraction, and the id
+ * itself.
  */
 #define SCOPE_HASH0(id)                 (HASH_ID(id) * JS_GOLDEN_RATIO)
 #define SCOPE_HASH1(hash0,shift)        ((hash0) >> (shift))
@@ -261,6 +271,8 @@ js_SearchScope(JSScope *scope, jsid id, JSBool adding)
         METER(misses);
         return spp;
     }
+
+    METER(hashes);
 
     /* Compute the primary hash address. */
     hash0 = SCOPE_HASH0(id);
@@ -519,7 +531,7 @@ NewPropTreeKidsChunk(JSRuntime *rt)
 {
     PropTreeKidsChunk *chunk;
 
-    chunk = calloc(1, sizeof *chunk);
+    chunk = (PropTreeKidsChunk *) calloc(1, sizeof *chunk);
     if (!chunk)
         return NULL;
     JS_ASSERT(((jsuword)chunk & CHUNKY_KIDS_TAG) == 0);
@@ -724,7 +736,6 @@ RemovePropertyTreeChild(JSRuntime *rt, JSScopeProperty *child)
                             if (!list)
                                 parent->kids = NULL;
                             freeChunk = lastChunk;
-                            goto out;
                         }
                         goto out;
                     }
@@ -1499,16 +1510,10 @@ js_ClearScope(JSContext *cx, JSScope *scope)
 void
 js_TraceId(JSTracer *trc, jsid id)
 {
-    JSObject *obj;
+    jsval v;
 
-    if (JSID_IS_ATOM(id)) {
-        JS_CALL_TRACER(trc, JSID_TO_ATOM(id), JSTRACE_ATOM, "id");
-    } else if (!JSID_IS_INT(id)) {
-        JS_ASSERT(JSID_IS_OBJECT(id));
-        obj = JSID_TO_OBJECT(id);
-        if (obj)
-            JS_CALL_OBJECT_TRACER(trc, obj, "id");
-    }
+    v = ID_TO_VALUE(id);
+    JS_CALL_VALUE_TRACER(trc, v, "id");
 }
 
 #if defined DEBUG || defined DUMP_SCOPE_STATS
@@ -1520,27 +1525,28 @@ static void
 PrintPropertyGetterOrSetter(JSTracer *trc, char *buf, size_t bufsize)
 {
     JSScopeProperty *sprop;
+    jsid id;
     size_t n;
-    const char *name;
+    const char *name, *prefix;
 
     JS_ASSERT(trc->debugPrinter == PrintPropertyGetterOrSetter);
     sprop = (JSScopeProperty *)trc->debugPrintArg;
+    id = sprop->id;
     name = trc->debugPrintIndex ? js_setter_str : js_getter_str;
-    n = strlen(name);
 
-    if (JSID_IS_ATOM(sprop->id)) {
-        JSAtom *atom = JSID_TO_ATOM(sprop->id);
-        if (atom && ATOM_IS_STRING(atom)) {
-            n = js_PutEscapedString(buf, bufsize - 1,
-                                    ATOM_TO_STRING(atom), 0);
-            buf[n++] = ' ';
-            strncpy(buf + n, name, bufsize - n);
-            buf[bufsize - 1] = '\0';
+    if (JSID_IS_ATOM(id) || JSID_IS_HIDDEN(id)) {
+        if (JSID_IS_HIDDEN(id)) {
+            id = JSID_UNHIDE_NAME(id);
+            prefix = "hidden ";
         } else {
-            JS_snprintf(buf, bufsize, "uknown %s", name);
+            prefix = "";
         }
+        n = js_PutEscapedString(buf, bufsize - 1,
+                                ATOM_TO_STRING(JSID_TO_ATOM(id)), 0);
+        if (n < bufsize - 1)
+            JS_snprintf(buf + n, bufsize - n, " %s%s", prefix, name);
     } else if (JSID_IS_INT(sprop->id)) {
-        JS_snprintf(buf, bufsize, "%d %s", JSID_TO_INT(sprop->id), name);
+        JS_snprintf(buf, bufsize, "%d %s", JSID_TO_INT(id), name);
     } else {
         JS_snprintf(buf, bufsize, "<object> %s", name);
     }
@@ -1551,7 +1557,8 @@ PrintPropertyGetterOrSetter(JSTracer *trc, char *buf, size_t bufsize)
 void
 js_TraceScopeProperty(JSTracer *trc, JSScopeProperty *sprop)
 {
-    sprop->flags |= SPROP_MARK;
+    if (IS_GC_MARKING_TRACER(trc))
+        sprop->flags |= SPROP_MARK;
     TRACE_ID(trc, sprop->id);
 
 #if JS_HAS_GETTER_SETTER
@@ -1636,22 +1643,32 @@ js_MeterPropertyTree(JSDHashTable *table, JSDHashEntryHdr *hdr, uint32 number,
 static void
 DumpSubtree(JSContext *cx, JSScopeProperty *sprop, int level, FILE *fp)
 {
+    jsval v;
     JSString *str;
     JSScopeProperty *kids, *kid;
     PropTreeKidsChunk *chunk;
     uintN i;
 
     fprintf(fp, "%*sid ", level, "");
-    if (JSID_IS_ATOM(sprop->id)) {
-        str =  ATOM_TO_STRING(JSID_TO_ATOM(sprop->id));
-    } else if (JSID_IS_OBJECT(sprop->id)) {
-        str = js_ValueToString(cx, OBJECT_JSID_TO_JSVAL(sprop->id));
+    v = ID_TO_VALUE(sprop->id);
+    if (JSID_IS_INT(sprop->id)) {
+        fprintf(fp, "%d", JSVAL_TO_INT(v));
     } else {
-        fprintf(fp, "%ld", JSVAL_TO_INT(sprop->id));
-        str = NULL;
+        if (JSID_IS_ATOM(sprop->id)) {
+            str = JSVAL_TO_STRING(v);
+        } else if (JSID_IS_HIDDEN(sprop->id)) {
+            str = JSVAL_TO_STRING(v);
+            fputs("hidden ", fp);
+        } else {
+            JSASSERT(JSID_IS_OBJECT(sprop->id));
+            str = js_ValueToString(cx, v);
+            fputs("object ", fp);
+        }
+        if (!str)
+            fputs("<error>", fp);
+        else
+            js_FileEscapedString(fp, str, '"');
     }
-    if (str)
-        js_FileEscapedString(fp, str, 0);
 
     fprintf(fp, " g/s %p/%p slot %lu attrs %x flags %x shortid %d\n",
             (void *) sprop->getter, (void *) sprop->setter,
@@ -1860,6 +1877,49 @@ js_SweepScopeProperties(JSContext *cx)
 #ifdef DUMP_SCOPE_STATS
     fprintf(logfp, " arenautil %g%%\n",
             (totalLiveCount * 100.0) / livePropCapacity);
+
+#define RATE(f1, f2) (((double)js_scope_stats.f1 / js_scope_stats.f2) * 100.0)
+
+    fprintf(logfp, "Scope search stats:\n"
+            "  searches:       %6u\n"
+            "  hits:           %6u %5.2f%% of searches\n"
+            "  misses:         %6u %5.2f%%\n"
+            "  hashes:         %6u %5.2f%%\n"
+            "  steps:          %6u %5.2f%% %5.2f%% of hashes\n"
+            "  stepHits:       %6u %5.2f%% %5.2f%%\n"
+            "  stepMisses:     %6u %5.2f%% %5.2f%%\n"
+            "  adds:           %6u\n"
+            "  redundantAdds:  %6u\n"
+            "  addFailures:    %6u\n"
+            "  changeFailures: %6u\n"
+            "  compresses:     %6u\n"
+            "  grows:          %6u\n"
+            "  removes:        %6u\n"
+            "  removeFrees:    %6u\n"
+            "  uselessRemoves: %6u\n"
+            "  shrinks:        %6u\n",
+            js_scope_stats.searches,
+            js_scope_stats.hits, RATE(hits, searches),
+            js_scope_stats.misses, RATE(misses, searches),
+            js_scope_stats.hashes, RATE(hashes, searches),
+            js_scope_stats.steps, RATE(steps, searches), RATE(steps, hashes),
+            js_scope_stats.stepHits,
+            RATE(stepHits, searches), RATE(stepHits, hashes),
+            js_scope_stats.stepMisses,
+            RATE(stepMisses, searches), RATE(stepMisses, hashes),
+            js_scope_stats.adds,
+            js_scope_stats.redundantAdds,
+            js_scope_stats.addFailures,
+            js_scope_stats.changeFailures,
+            js_scope_stats.compresses,
+            js_scope_stats.grows,
+            js_scope_stats.removes,
+            js_scope_stats.removeFrees,
+            js_scope_stats.uselessRemoves,
+            js_scope_stats.shrinks);
+
+#undef RATE
+
     fflush(logfp);
 #endif
 
@@ -1891,7 +1951,7 @@ js_InitPropertyTree(JSRuntime *rt)
         return JS_FALSE;
     }
     JS_INIT_ARENA_POOL(&rt->propertyArenaPool, "properties",
-                       256 * sizeof(JSScopeProperty), sizeof(void *));
+                       256 * sizeof(JSScopeProperty), sizeof(void *), NULL);
     return JS_TRUE;
 }
 

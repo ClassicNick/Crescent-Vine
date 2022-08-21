@@ -77,7 +77,7 @@ static PRUintn threadTPIndex;
 static JSBool  tpIndexInited = JS_FALSE;
 
 JSBool
-js_InitThreadPrivateIndex(void *ptr)
+js_InitThreadPrivateIndex(void (JS_DLL_CALLBACK *ptr)(void *))
 {
     PRStatus status;
 
@@ -225,9 +225,11 @@ js_NewContext(JSRuntime *rt, size_t stackChunkSize)
     memset(cx, 0, sizeof *cx);
 
     cx->runtime = rt;
+    cx->debugHooks = &rt->globalDebugHooks;
 #if JS_STACK_GROWTH_DIRECTION > 0
     cx->stackLimit = (jsuword)-1;
 #endif
+    cx->scriptStackQuota = JS_DEFAULT_SCRIPT_STACK_QUOTA;
 #ifdef JS_THREADSAFE
     JS_INIT_CLIST(&cx->threadLinks);
     js_SetContextThread(cx);
@@ -258,8 +260,10 @@ js_NewContext(JSRuntime *rt, size_t stackChunkSize)
      * done by js_DestroyContext).
      */
     cx->version = JSVERSION_DEFAULT;
-    JS_INIT_ARENA_POOL(&cx->stackPool, "stack", stackChunkSize, sizeof(jsval));
-    JS_INIT_ARENA_POOL(&cx->tempPool, "temp", 1024, sizeof(jsdouble));
+    JS_INIT_ARENA_POOL(&cx->stackPool, "stack", stackChunkSize, sizeof(jsval),
+                       &cx->scriptStackQuota);
+    JS_INIT_ARENA_POOL(&cx->tempPool, "temp", 1024, sizeof(jsdouble),
+                       &cx->scriptStackQuota);
 
     if (!js_InitRegExpStatics(cx, &cx->regExpStatics)) {
         js_DestroyContext(cx, JSDCM_NEW_FAILED);
@@ -278,16 +282,13 @@ js_NewContext(JSRuntime *rt, size_t stackChunkSize)
 #ifdef JS_THREADSAFE
         JS_BeginRequest(cx);
 #endif
+        ok = js_InitCommonAtoms(cx);
+
         /*
-         * Both atomState and the scriptFilenameTable may be left over from a
-         * previous episode of non-zero contexts alive in rt, so don't re-init
-         * either table if it's not necessary.  Just repopulate atomState with
-         * well-known internal atoms, and with the reserved identifiers added
-         * by the scanner.
+         * scriptFilenameTable may be left over from a previous episode of
+         * non-zero contexts alive in rt, so don't re-init the table if it's
+         * not necessary.
          */
-        ok = (rt->atomState.liveAtoms == 0)
-             ? js_InitAtomState(cx, &rt->atomState)
-             : js_InitPinnedAtoms(cx, &rt->atomState);
         if (ok && !rt->scriptFilenameTable)
             ok = js_InitRuntimeScriptState(rt);
         if (ok)
@@ -368,12 +369,12 @@ js_DestroyContext(JSContext *cx, JSDestroyContextMode mode)
             JS_BeginRequest(cx);
 #endif
 
-        /* Unpin all pinned atoms before final GC. */
-        js_UnpinPinnedAtoms(&rt->atomState);
-
         /* Unlock and clear GC things held by runtime pointers. */
         js_FinishRuntimeNumberState(cx);
         js_FinishRuntimeStringState(cx);
+
+        /* Unpin all common atoms before final GC. */
+        js_FinishCommonAtoms(cx);
 
         /* Clear debugging state to remove GC roots. */
         JS_ClearAllTraps(cx);
@@ -407,19 +408,17 @@ js_DestroyContext(JSContext *cx, JSDestroyContextMode mode)
     if (last) {
         js_GC(cx, GC_LAST_CONTEXT);
 
-        /* Try to free atom state, now that no unrooted scripts survive. */
-        if (rt->atomState.liveAtoms == 0)
-            js_FreeAtomState(cx, &rt->atomState);
-
-        /* Also free the script filename table if it exists and is empty. */
+        /* Free the script filename table if it exists and is empty. */
         if (rt->scriptFilenameTable && rt->scriptFilenameTable->nentries == 0)
             js_FinishRuntimeScriptState(rt);
 
         /*
-         * Free the deflated string cache, but only after the last GC has
-         * collected all unleaked strings.
+         * Free unit string storage only after the last GC has completed, so
+         * that js_FinalizeString can detect unit strings and avoid calling
+         * free on their chars storage.
          */
-        js_FinishDeflatedStringCache(rt);
+        free(rt->unitStrings);
+        rt->unitStrings = NULL;
 
         /* Take the runtime down, now that it has no contexts or atoms. */
         JS_LOCK_GC(rt);
@@ -851,11 +850,11 @@ ReportError(JSContext *cx, const char *message, JSErrorReport *reportp)
      */
     if (!js_ErrorToException(cx, message, reportp)) {
         js_ReportErrorAgain(cx, message, reportp);
-    } else if (cx->runtime->debugErrorHook && cx->errorReporter) {
-        JSDebugErrorHook hook = cx->runtime->debugErrorHook;
+    } else if (cx->debugHooks->debugErrorHook && cx->errorReporter) {
+        JSDebugErrorHook hook = cx->debugHooks->debugErrorHook;
         /* test local in case debugErrorHook changed on another thread */
         if (hook)
-            hook(cx, message, reportp, cx->runtime->debugErrorHookData);
+            hook(cx, message, reportp, cx->debugHooks->debugErrorHookData);
     }
 }
 
@@ -900,9 +899,9 @@ js_ReportOutOfMemory(JSContext *cx)
      * sending the error on to the regular ErrorReporter.
      */
     if (onError) {
-        JSDebugErrorHook hook = cx->runtime->debugErrorHook;
+        JSDebugErrorHook hook = cx->debugHooks->debugErrorHook;
         if (hook &&
-            !hook(cx, msg, &report, cx->runtime->debugErrorHookData)) {
+            !hook(cx, msg, &report, cx->debugHooks->debugErrorHookData)) {
             onError = NULL;
         }
     }
@@ -1202,10 +1201,10 @@ js_ReportErrorAgain(JSContext *cx, const char *message, JSErrorReport *reportp)
      * sending the error on to the regular ErrorReporter.
      */
     if (onError) {
-        JSDebugErrorHook hook = cx->runtime->debugErrorHook;
+        JSDebugErrorHook hook = cx->debugHooks->debugErrorHook;
         if (hook &&
             !hook(cx, cx->lastMessage, reportp,
-                  cx->runtime->debugErrorHookData)) {
+                  cx->debugHooks->debugErrorHookData)) {
             onError = NULL;
         }
     }

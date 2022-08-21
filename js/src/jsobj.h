@@ -154,18 +154,29 @@ struct JSObject {
      : (JS_ASSERT((slot) < (uint32)(obj)->dslots[-1]),                        \
         (obj)->dslots[(slot) - JS_INITIAL_NSLOTS] = (value)))
 
-#define STOBJ_GET_PROTO(obj) \
+#define STOBJ_GET_PROTO(obj)                                                  \
     JSVAL_TO_OBJECT((obj)->fslots[JSSLOT_PROTO])
 #define STOBJ_SET_PROTO(obj,proto) \
     ((obj)->fslots[JSSLOT_PROTO] = OBJECT_TO_JSVAL(proto))
 
-#define STOBJ_GET_PARENT(obj) \
+#define STOBJ_GET_PARENT(obj)                                                 \
     JSVAL_TO_OBJECT((obj)->fslots[JSSLOT_PARENT])
 #define STOBJ_SET_PARENT(obj,parent) \
     ((obj)->fslots[JSSLOT_PARENT] = OBJECT_TO_JSVAL(parent))
 
-#define STOBJ_GET_CLASS(obj) \
-    ((JSClass *)JSVAL_TO_PRIVATE((obj)->fslots[JSSLOT_CLASS]))
+/*
+ * We use JSSLOT_CLASS to store both JSClass* and the system flag as an int-
+ * tagged value (see jsapi.h for details) with the system flag stored in the
+ * second lowest bit.
+ */
+#define STOBJ_GET_CLASS(obj)    ((JSClass *)((obj)->fslots[JSSLOT_CLASS] & ~3))
+#define STOBJ_IS_SYSTEM(obj)    (((obj)->fslots[JSSLOT_CLASS] & 2) != 0)
+
+#define STOBJ_SET_SYSTEM(obj)   ((void)((obj)->fslots[JSSLOT_CLASS] |= 2))
+
+#define STOBJ_GET_PRIVATE(obj)                                          \
+    (JS_ASSERT(JSVAL_IS_INT(STOBJ_GET_SLOT(obj, JSSLOT_PRIVATE))),            \
+     JSVAL_TO_PRIVATE(STOBJ_GET_SLOT(obj, JSSLOT_PRIVATE)))
 
 #define OBJ_CHECK_SLOT(obj,slot)                                              \
     JS_ASSERT(slot < (obj)->map->freeslot)
@@ -194,6 +205,9 @@ struct JSObject {
 
 #define LOCKED_OBJ_GET_CLASS(obj) \
     (OBJ_CHECK_SLOT(obj, JSSLOT_CLASS), STOBJ_GET_CLASS(obj))
+
+#define LOCKED_OBJ_GET_PRIVATE(obj) \
+    (OBJ_CHECK_SLOT(obj, JSSLOT_PRIVATE), STOBJ_GET_PRIVATE(obj))
 
 #ifdef JS_THREADSAFE
 
@@ -260,10 +274,11 @@ struct JSObject {
 
 /*
  * Class is invariant and comes from the fixed JSCLASS_SLOT. Thus no locking
- * is necessary to read it.
+ * is necessary to read it. Same for the private slot.
  */
 #define GC_AWARE_GET_CLASS(cx, obj)     STOBJ_GET_CLASS(obj)
 #define OBJ_GET_CLASS(cx,obj)           STOBJ_GET_CLASS(obj)
+#define OBJ_GET_PRIVATE(cx,obj)         STOBJ_GET_PRIVATE(obj)
 
 /* Test whether a map or object is native. */
 #define MAP_IS_NATIVE(map)                                                    \
@@ -360,16 +375,7 @@ extern void
 js_TraceSharpMap(JSTracer *trc, JSSharpObjectMap *map);
 
 extern JSBool
-js_obj_toSource(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-                jsval *rval);
-
-extern JSBool
-js_obj_toString(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
-                jsval *rval);
-
-extern JSBool
-js_HasOwnPropertyHelper(JSContext *cx, JSObject *obj, JSLookupPropOp lookup,
-                        uintN argc, jsval *argv, jsval *rval);
+js_HasOwnPropertyHelper(JSContext *cx, JSLookupPropOp lookup, jsval *vp);
 
 extern JSObject*
 js_InitBlockClass(JSContext *cx, JSObject* obj);
@@ -501,10 +507,14 @@ js_LookupProperty(JSContext *cx, JSObject *obj, jsid id, JSObject **objp,
 
 /*
  * Specialized subroutine that allows caller to preset JSRESOLVE_* flags.
+ * JSRESOLVE_HIDDEN flags hidden function param/local name lookups, just for
+ * internal use by fun_resolve and similar built-ins.
  */
 extern JSBool
 js_LookupPropertyWithFlags(JSContext *cx, JSObject *obj, jsid id, uintN flags,
                            JSObject **objp, JSProperty **propp);
+
+#define JSRESOLVE_HIDDEN        0x8000
 
 extern JS_FRIEND_API(JSBool)
 js_FindProperty(JSContext *cx, jsid id, JSObject **objp, JSObject **pobjp,
@@ -592,6 +602,13 @@ js_GetClassPrototype(JSContext *cx, JSObject *scope, jsid id,
 extern JSBool
 js_SetClassPrototype(JSContext *cx, JSObject *ctor, JSObject *proto,
                      uintN attrs);
+
+/*
+ * Wrap boolean, number or string as Boolean, Number or String object.
+ * *vp must not be an object, null or undefined.
+ */
+extern JSBool
+js_PrimitiveToObject(JSContext *cx, jsval *vp);
 
 extern JSBool
 js_ValueToObject(JSContext *cx, jsval v, JSObject **objp);

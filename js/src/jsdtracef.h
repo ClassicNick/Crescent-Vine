@@ -1,4 +1,5 @@
 /* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sw=4 et tw=80:
  *
  * ***** BEGIN LICENSE BLOCK *****
  * Version: MPL 1.1/GPL 2.0/LGPL 2.1
@@ -13,15 +14,10 @@
  * for the specific language governing rights and limitations under the
  * License.
  *
- * The Original Code is Mozilla Communicator client code, released
- * March 31, 1998.
- *
- * The Initial Developer of the Original Code is
- * Netscape Communications Corporation.
- * Portions created by the Initial Developer are Copyright (C) 1998
- * the Initial Developer. All Rights Reserved.
+ * Copyright (C) 2007  Sun Microsystems, Inc. All Rights Reserved.
  *
  * Contributor(s):
+ *      Brendan Eich <brendan@mozilla.org>
  *
  * Alternatively, the contents of this file may be used under the terms of
  * either of the GNU General Public License Version 2 or later (the "GPL"),
@@ -37,37 +33,45 @@
  *
  * ***** END LICENSE BLOCK ***** */
 
-#ifndef jsbool_h___
-#define jsbool_h___
-/*
- * JS boolean interface.
- */
+#include "javascript-trace.h"
+#include "jspubtd.h"
+#include "jsprvtd.h"
 
-JS_BEGIN_EXTERN_C
+#ifndef _JSDTRACEF_H
+#define _JSDTRACEF_H
 
-/*
- * Crypto-booleans, not visible to script but used internally by the engine.
- *
- * JSVAL_HOLE is a useful value for identifying a hole in an array.  It's also
- * used in the interpreter to represent "no exception pending".  In general it
- * can be used to represent "no value".
- *
- * JSVAL_ARETURN is used to throw asynchronous return for generator.close().
- */
-#define JSVAL_HOLE      BOOLEAN_TO_JSVAL(2)
-#define JSVAL_ARETURN   BOOLEAN_TO_JSVAL(3)
+extern void
+jsdtrace_function_entry(JSContext *cx, JSStackFrame *fp, JSFunction *fun);
 
-extern JSClass js_BooleanClass;
+extern void
+jsdtrace_function_info(JSContext *cx, JSStackFrame *fp, JSStackFrame *dfp,
+                       JSFunction *fun);
 
-extern JSObject *
-js_InitBooleanClass(JSContext *cx, JSObject *obj);
+extern void
+jsdtrace_function_args(JSContext *cx, JSStackFrame *fp, JSFunction *fun);
 
-extern JSString *
-js_BooleanToString(JSContext *cx, JSBool b);
+extern void
+jsdtrace_function_rval(JSContext *cx, JSStackFrame *fp, JSFunction *fun);
 
-extern JSBool
-js_ValueToBoolean(JSContext *cx, jsval v, JSBool *bp);
+extern void
+jsdtrace_function_return(JSContext *cx, JSStackFrame *fp, JSFunction *fun);
 
-JS_END_EXTERN_C
+extern void
+jsdtrace_object_create_start(JSStackFrame *fp, JSClass *clasp);
 
-#endif /* jsbool_h___ */
+extern void
+jsdtrace_object_create_done(JSStackFrame *fp, JSClass *clasp);
+
+extern void
+jsdtrace_object_create(JSContext *cx, JSClass *clasp, JSObject *obj);
+
+extern void
+jsdtrace_object_finalize(JSObject *obj);
+
+extern void
+jsdtrace_execute_start(JSScript *script);
+
+extern void
+jsdtrace_execute_done(JSScript *script);
+
+#endif /* _JSDTRACE_H */
