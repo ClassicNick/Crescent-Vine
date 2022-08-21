@@ -222,15 +222,15 @@ NewOrRecycledNode(JSContext *cx, JSTreeContext *tc)
             break;
         }
     }
-#ifdef METER_PARSENODES
     if (pn) {
+#ifdef METER_PARSENODES
         parsenodes++;
         if (parsenodes - recyclednodes > maxparsenodes)
             maxparsenodes = parsenodes - recyclednodes;
-    }
 #endif
-    memset(&pn->pn_u, 0, sizeof pn->pn_u);
-    pn->pn_next = NULL;
+        memset(&pn->pn_u, 0, sizeof pn->pn_u);
+        pn->pn_next = NULL;
+    }
     return pn;
 }
 
@@ -4737,7 +4737,7 @@ MemberExpr(JSContext *cx, JSTokenStream *ts, JSTreeContext *tc,
 
             /* Pick JSOP_EVAL and flag tc as heavyweight if eval(...). */
             pn2->pn_op = JSOP_CALL;
-            if (pn->pn_op == JSOP_NAME &&
+            if (pn->pn_arity == PN_NAME &&
                 pn->pn_atom == cx->runtime->atomState.evalAtom) {
                 pn2->pn_op = JSOP_EVAL;
                 tc->flags |= TCF_FUN_HEAVYWEIGHT;

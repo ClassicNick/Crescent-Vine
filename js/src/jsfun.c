@@ -73,12 +73,11 @@
 /* Generic function/call/arguments tinyids -- also reflected bit numbers. */
 enum {
     CALL_ARGUMENTS  = -1,       /* predefined arguments local variable */
-    CALL_CALLEE     = -2,       /* reference to active function's object */
-    ARGS_LENGTH     = -3,       /* number of actual args, arity if inactive */
-    ARGS_CALLEE     = -4,       /* reference from arguments to active funobj */
-    FUN_ARITY       = -5,       /* number of formal parameters; desired argc */
-    FUN_NAME        = -6,       /* function name, "" if anonymous */
-    FUN_CALLER      = -7        /* Function.prototype.caller, backward compat */
+    ARGS_LENGTH     = -2,       /* number of actual args, arity if inactive */
+    ARGS_CALLEE     = -3,       /* reference from arguments to active funobj */
+    FUN_ARITY       = -4,       /* number of formal parameters; desired argc */
+    FUN_NAME        = -5,       /* function name, "" if anonymous */
+    FUN_CALLER      = -6        /* Function.prototype.caller, backward compat */
 };
 
 #if JSFRAME_OVERRIDE_BITS < 8
@@ -173,8 +172,7 @@ ArgWasDeleted(JSContext *cx, JSStackFrame *fp, uintN slot)
 }
 
 JSBool
-js_GetArgsProperty(JSContext *cx, JSStackFrame *fp, jsid id,
-                   JSObject **objp, jsval *vp)
+js_GetArgsProperty(JSContext *cx, JSStackFrame *fp, jsid id, jsval *vp)
 {
     jsval val;
     JSObject *obj;
@@ -195,11 +193,9 @@ js_GetArgsProperty(JSContext *cx, JSStackFrame *fp, jsid id,
         } else {
             obj = JSVAL_TO_OBJECT(val);
         }
-        *objp = obj;
         return OBJ_GET_PROPERTY(cx, obj, id, vp);
     }
 
-    *objp = NULL;
     *vp = JSVAL_VOID;
     if (JSID_IS_INT(id)) {
         slot = (uintN) JSID_TO_INT(id);
@@ -642,9 +638,11 @@ js_PutCallObject(JSContext *cx, JSStackFrame *fp)
      * Get the arguments object to snapshot fp's actual argument values.
      */
     if (fp->argsobj) {
-        argsid = ATOM_TO_JSID(cx->runtime->atomState.argumentsAtom);
-        ok &= js_GetProperty(cx, callobj, argsid, &aval);
-        ok &= js_SetProperty(cx, callobj, argsid, &aval);
+        if (!TEST_OVERRIDE_BIT(fp, CALL_ARGUMENTS)) {
+            argsid = ATOM_TO_JSID(cx->runtime->atomState.argumentsAtom);
+            aval = OBJECT_TO_JSVAL(fp->argsobj);
+            ok &= js_SetProperty(cx, callobj, argsid, &aval);
+        }
         ok &= js_PutArgsObject(cx, fp);
     }
 
@@ -657,12 +655,6 @@ js_PutCallObject(JSContext *cx, JSStackFrame *fp)
     fp->callobj = NULL;
     return ok;
 }
-
-static JSPropertySpec call_props[] = {
-    {js_arguments_str,  CALL_ARGUMENTS, JSPROP_PERMANENT,0,0},
-    {"__callee__",      CALL_CALLEE,    0,0,0},
-    {0,0,0,0,0}
-};
 
 static JSBool
 call_getProperty(JSContext *cx, JSObject *obj, jsval id, jsval *vp)
@@ -686,11 +678,6 @@ call_getProperty(JSContext *cx, JSObject *obj, jsval id, jsval *vp)
                 return JS_FALSE;
             *vp = OBJECT_TO_JSVAL(argsobj);
         }
-        break;
-
-      case CALL_CALLEE:
-        if (!TEST_OVERRIDE_BIT(fp, slot))
-            *vp = fp->argv ? fp->argv[-2] : OBJECT_TO_JSVAL(fp->fun->object);
         break;
 
       default:
@@ -717,7 +704,6 @@ call_setProperty(JSContext *cx, JSObject *obj, jsval id, jsval *vp)
     slot = JSVAL_TO_INT(id);
     switch (slot) {
       case CALL_ARGUMENTS:
-      case CALL_CALLEE:
         SET_OVERRIDE_BIT(fp, slot);
         break;
 
@@ -914,8 +900,27 @@ call_resolve(JSContext *cx, JSObject *obj, jsval id, uintN flags,
             }
             *objp = obj;
         }
+        return JS_TRUE;
     }
 
+    if (!(flags & JSRESOLVE_ASSIGNING)) {
+        /*
+         * Resolve arguments so that we never store a particular Call object's
+         * arguments object reference in a Call prototype's |arguments| slot.
+         */
+        atom = cx->runtime->atomState.argumentsAtom;
+        if (id == ATOM_KEY(atom)) {
+            if (!js_DefineNativeProperty(cx, obj,
+                                         ATOM_TO_JSID(atom), JSVAL_VOID,
+                                         NULL, NULL, JSPROP_PERMANENT,
+                                         SPROP_HAS_SHORTID, CALL_ARGUMENTS,
+                                         NULL)) {
+                return JS_FALSE;
+            }
+            *objp = obj;
+            return JS_TRUE;
+        }
+    }
     return JS_TRUE;
 }
 
@@ -957,17 +962,30 @@ JSClass js_CallClass = {
  *
  * The extensions below other than length, i.e., the ones not in ECMA-262,
  * are neither JSPROP_READONLY nor JSPROP_SHARED, because for compatibility
- * with ECMA we must allow a delegating object to override them.
+ * with ECMA we must allow a delegating object to override them. Therefore to
+ * avoid entraining garbage in Function.prototype slots, they must be resolved
+ * in non-prototype function objects, wherefore the lazy_function_props table
+ * and fun_resolve's use of it.
  */
 #define LENGTH_PROP_ATTRS (JSPROP_READONLY|JSPROP_PERMANENT|JSPROP_SHARED)
 
 static JSPropertySpec function_props[] = {
-    {js_arguments_str, CALL_ARGUMENTS, JSPROP_PERMANENT,  0,0},
-    {js_arity_str,     FUN_ARITY,      JSPROP_PERMANENT,  0,0},
-    {js_caller_str,    FUN_CALLER,     JSPROP_PERMANENT,  0,0},
     {js_length_str,    ARGS_LENGTH,    LENGTH_PROP_ATTRS, 0,0},
-    {js_name_str,      FUN_NAME,       JSPROP_PERMANENT,  0,0},
     {0,0,0,0,0}
+};
+
+typedef struct LazyFunctionProp {
+    uint16      atomOffset;
+    int8        tinyid;
+    uint8       attrs;
+} LazyFunctionProp;
+
+/* NB: no sentinel at the end -- use JS_ARRAY_LENGTH to bound loops. */
+static LazyFunctionProp lazy_function_props[] = {
+    {ATOM_OFFSET(arguments), CALL_ARGUMENTS, JSPROP_PERMANENT},
+    {ATOM_OFFSET(arity),     FUN_ARITY,      JSPROP_PERMANENT},
+    {ATOM_OFFSET(caller),    FUN_CALLER,     JSPROP_PERMANENT},
+    {ATOM_OFFSET(name),      FUN_NAME,       JSPROP_PERMANENT},
 };
 
 static JSBool
@@ -1089,18 +1107,46 @@ fun_resolve(JSContext *cx, JSObject *obj, jsval id, uintN flags,
             JSObject **objp)
 {
     JSFunction *fun;
-    JSString *str;
-    JSAtom *prototypeAtom;
+    JSAtom *atom;
+    uintN i;
 
     if (!JSVAL_IS_STRING(id))
         return JS_TRUE;
 
-    /* No valid function object should lack private data, but check anyway. */
+    /* No valid function object should lack private data. */
     fun = (JSFunction *)JS_GetInstancePrivate(cx, obj, &js_FunctionClass, NULL);
-    if (!fun || !fun->object)
-        return JS_TRUE;
+    JS_ASSERT(fun && fun->object);
 
-    /* No need to reflect fun.prototype in 'fun.prototype = ...'. */
+    /*
+     * Check for a hidden formal parameter or local variable binding in the
+     * clone-parent of obj, which would be a different, non-null fun->object.
+     */
+    if (flags & JSRESOLVE_HIDDEN) {
+        if (fun->object != obj) {
+            JSObject *pobj;
+            JSProperty *prop;
+
+            atom = js_AtomizeString(cx, JSVAL_TO_STRING(id), 0);
+            if (!atom)
+                return JS_FALSE;
+            if (!js_LookupHiddenProperty(cx, fun->object, ATOM_TO_JSID(atom),
+                                         &pobj, &prop)) {
+                return JS_FALSE;
+            }
+            if (prop) {
+                JS_ASSERT(pobj == fun->object);
+                *objp = pobj;
+                OBJ_DROP_PROPERTY(cx, pobj, prop);
+            }
+        }
+        return JS_TRUE;
+    }
+
+    /*
+     * No need to reflect fun.prototype in 'fun.prototype = ...'. This test
+     * must come after the JSRESOLVE_HIDDEN test, since call_resolve may look
+     * for a hidden function object property from an assignment bytecode.
+     */
     if (flags & JSRESOLVE_ASSIGNING)
         return JS_TRUE;
 
@@ -1108,22 +1154,24 @@ fun_resolve(JSContext *cx, JSObject *obj, jsval id, uintN flags,
      * Ok, check whether id is 'prototype' and bootstrap the function object's
      * prototype property.
      */
-    str = JSVAL_TO_STRING(id);
-    prototypeAtom = cx->runtime->atomState.classPrototypeAtom;
-    if (str == ATOM_TO_STRING(prototypeAtom)) {
+    atom = cx->runtime->atomState.classPrototypeAtom;
+    if (id == ATOM_KEY(atom)) {
         JSObject *proto, *parentProto;
         jsval pval;
 
         proto = parentProto = NULL;
-        if (fun->object != obj && fun->object) {
+        if (fun->object != obj &&
+            (!cx->runtime->findObjectPrincipals ||
+             cx->runtime->findObjectPrincipals(cx, obj) ==
+             cx->runtime->findObjectPrincipals(cx, fun->object))) {
             /*
-             * Clone of a function: make its prototype property value have the
-             * same class as the clone-parent's prototype.
+             * Clone of a function where the clone and the object owning fun
+             * appear to be in the same trust domain: make the cloned function
+             * object's 'prototype' property value have the same class as the
+             * clone-parent's 'prototype' value.
              */
-            if (!OBJ_GET_PROPERTY(cx, fun->object, ATOM_TO_JSID(prototypeAtom),
-                                  &pval)) {
+            if (!OBJ_GET_PROPERTY(cx, fun->object, ATOM_TO_JSID(atom), &pval))
                 return JS_FALSE;
-            }
             if (!JSVAL_IS_PRIMITIVE(pval)) {
                 /*
                  * We are about to allocate a new object, so hack the newborn
@@ -1165,6 +1213,24 @@ fun_resolve(JSContext *cx, JSObject *obj, jsval id, uintN flags,
             return JS_FALSE;
         }
         *objp = obj;
+        return JS_TRUE;
+    }
+
+    for (i = 0; i < JS_ARRAY_LENGTH(lazy_function_props); i++) {
+        LazyFunctionProp *lfp = &lazy_function_props[i];
+
+        atom = OFFSET_TO_ATOM(cx->runtime, lfp->atomOffset);
+        if (id == ATOM_KEY(atom)) {
+            if (!js_DefineNativeProperty(cx, obj,
+                                         ATOM_TO_JSID(atom), JSVAL_VOID,
+                                         NULL, NULL, lfp->attrs,
+                                         SPROP_HAS_SHORTID, lfp->tinyid,
+                                         NULL)) {
+                return JS_FALSE;
+            }
+            *objp = obj;
+            return JS_TRUE;
+        }
     }
 
     return JS_TRUE;
@@ -1447,8 +1513,10 @@ fun_trace(JSTracer *trc, JSObject *obj)
     fun = (JSFunction *) JS_GetPrivate(trc->context, obj);
     if (fun) {
         JS_CALL_TRACER(trc, fun, JSTRACE_FUNCTION, "private");
+        if (fun->object != obj)
+            JS_CALL_TRACER(trc, fun->object, JSTRACE_OBJECT, "object");
         if (fun->atom)
-            JS_CALL_TRACER(trc, fun->atom, JSTRACE_ATOM, "name");
+            JS_CALL_TRACER(trc, fun->atom, JSTRACE_ATOM, "atom");
         if (FUN_INTERPRETED(fun) && fun->u.i.script)
             js_TraceScript(trc, fun->u.i.script);
     }
@@ -2093,7 +2161,7 @@ js_InitCallClass(JSContext *cx, JSObject *obj)
     JSObject *proto;
 
     proto = JS_InitClass(cx, obj, NULL, &js_CallClass, NULL, 0,
-                         call_props, NULL, NULL, NULL);
+                         NULL, NULL, NULL, NULL);
     if (!proto)
         return NULL;
 
@@ -2160,7 +2228,7 @@ js_CloneFunctionObject(JSContext *cx, JSObject *funobj, JSObject *parent)
     JSFunction *fun;
 
     JS_ASSERT(OBJ_GET_CLASS(cx, funobj) == &js_FunctionClass);
-    newfunobj = js_NewObject(cx, &js_FunctionClass, funobj, parent);
+    newfunobj = js_NewObject(cx, &js_FunctionClass, NULL, parent);
     if (!newfunobj)
         return NULL;
     fun = (JSFunction *) JS_GetPrivate(cx, funobj);

@@ -507,7 +507,8 @@ QuoteString(Sprinter *sp, JSString *str, uint32 quote)
     for (t = s; t < z; s = ++t) {
         /* Move t forward from s past un-quote-worthy characters. */
         c = *t;
-        while (JS_ISPRINT(c) && c != qc && c != '\\' && !(c >> 8)) {
+        while (JS_ISPRINT(c) && c != qc && c != '\\' && c != '\t' &&
+               !(c >> 8)) {
             c = *++t;
             if (t == z)
                 break;
@@ -1360,7 +1361,7 @@ DecompileDestructuringLHS(SprintStack *ss, jsbytecode *pc, jsbytecode *endpc,
          */
         todo = ss->sprinter.offset;
         ss->sprinter.offset = todo + PAREN_SLOP;
-        pc = Decompile(ss, pc, -ss->top, JSOP_NOP);
+        pc = Decompile(ss, pc, -((intN)ss->top), JSOP_NOP);
         if (!pc)
             return NULL;
         if (pc == endpc)
@@ -1681,7 +1682,7 @@ Decompile(SprintStack *ss, jsbytecode *pc, intN nb, JSOp nextop)
 #define DECOMPILE_CODE(pc,nb) if (!Decompile(ss, pc, nb, JSOP_NOP)) return NULL
 #define NEXT_OP(pc)           (((pc) + (len) == endpc) ? nextop : pc[len])
 #define POP_STR()             PopStr(ss, op)
-#define LOCAL_ASSERT(expr)    LOCAL_ASSERT_RV(expr, JS_FALSE)
+#define LOCAL_ASSERT(expr)    LOCAL_ASSERT_RV(expr, NULL)
 
 /*
  * Callers know that ATOM_IS_STRING(atom), and we leave it to the optimizer to
@@ -3328,10 +3329,8 @@ Decompile(SprintStack *ss, jsbytecode *pc, intN nb, JSOp nextop)
                 ok = JS_TRUE;
                 for (i = argc; i > 0; i--) {
                     argv[i] = JS_strdup(cx, POP_STR());
-                    if (!argv[i]) {
+                    if (!argv[i])
                         ok = JS_FALSE;
-                        break;
-                    }
                 }
 
                 /* Skip the JSOP_PUSHOBJ-created empty string. */

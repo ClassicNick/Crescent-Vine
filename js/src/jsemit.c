@@ -154,6 +154,10 @@ UpdateDepth(JSContext *cx, JSCodeGenerator *cg, ptrdiff_t target)
     pc = CG_CODE(cg, target);
     op = (JSOp) *pc;
     cs = &js_CodeSpec[op];
+    if ((cs->format & JOF_TMPSLOT) &&
+        (uintN)cg->stackDepth >= cg->maxStackDepth) {
+        cg->maxStackDepth = cg->stackDepth + 1;
+    }
     nuses = cs->nuses;
     if (nuses < 0) {
         switch (op) {
@@ -1534,7 +1538,7 @@ js_DefineCompileTimeConstant(JSContext *cx, JSCodeGenerator *cg, JSAtom *atom,
         ale = js_IndexAtom(cx, atom, &cg->constList);
         if (!ale)
             return JS_FALSE;
-        ALE_SET_VALUE(ale, ATOM_KEY(valueAtom));
+        ale->entry.value = (void *)ATOM_KEY(valueAtom);
     }
     return JS_TRUE;
 }
@@ -1780,7 +1784,7 @@ EmitBigIndexPrefix(JSContext *cx, JSCodeGenerator *cg, jsatomid atomIndex)
             return -1;
         return JSOP_RESETBASE0;
     }
-    if (js_Emit2(cx, cg, JSOP_ATOMBASE, atomIndex) < 0)
+    if (js_Emit2(cx, cg, JSOP_ATOMBASE, (JSOp)atomIndex) < 0)
         return -1;
     return JSOP_RESETBASE;
 }
@@ -2208,41 +2212,28 @@ CheckSideEffects(JSContext *cx, JSTreeContext *tc, JSParseNode *pn,
                 if (!CheckSideEffects(cx, tc, pn->pn_right, answer))
                     return JS_FALSE;
                 if (!*answer &&
-                    (pn2->pn_slot < 0 || !(pn2->pn_attrs & JSPROP_READONLY))) {
+                    (pn->pn_op != JSOP_NOP ||
+                     pn2->pn_slot < 0 ||
+                     !(pn2->pn_attrs & JSPROP_READONLY))) {
                     *answer = JS_TRUE;
                 }
             }
         } else {
-            if (pn->pn_type == TOK_LB) {
-                pn2 = pn->pn_left;
-                if (pn2->pn_type == TOK_NAME &&
-                    !BindNameToSlot(cx, tc, pn2, 0)) {
-                    return JS_FALSE;
-                }
-                if (pn2->pn_op != JSOP_ARGUMENTS) {
-                    /*
-                     * Any indexed property reference could call a getter with
-                     * side effects, except for arguments[i] where arguments is
-                     * unambiguous.
-                     */
-                    *answer = JS_TRUE;
-                }
-            }
-            ok = CheckSideEffects(cx, tc, pn->pn_left, answer) &&
-                 CheckSideEffects(cx, tc, pn->pn_right, answer);
+            /*
+             * We can't easily prove that neither operand ever denotes an
+             * object with a toString or valueOf method.
+             */
+            *answer = JS_TRUE;
         }
         break;
 
       case PN_UNARY:
-        if (pn->pn_type == TOK_INC || pn->pn_type == TOK_DEC ||
-            pn->pn_type == TOK_THROW ||
-#if JS_HAS_GENERATORS
-            pn->pn_type == TOK_YIELD ||
-#endif
-            pn->pn_type == TOK_DEFSHARP) {
-            /* All these operations have effects that we must commit. */
-            *answer = JS_TRUE;
-        } else if (pn->pn_type == TOK_DELETE) {
+        switch (pn->pn_type) {
+          case TOK_RP:
+            ok = CheckSideEffects(cx, tc, pn->pn_kid, answer);
+            break;
+
+          case TOK_DELETE:
             pn2 = pn->pn_kid;
             switch (pn2->pn_type) {
               case TOK_NAME:
@@ -2261,8 +2252,17 @@ CheckSideEffects(JSContext *cx, JSTreeContext *tc, JSParseNode *pn,
                 ok = CheckSideEffects(cx, tc, pn2, answer);
                 break;
             }
-        } else {
-            ok = CheckSideEffects(cx, tc, pn->pn_kid, answer);
+            break;
+
+          default:
+            /*
+             * All of TOK_INC, TOK_DEC, TOK_THROW, TOK_YIELD, and TOK_DEFSHARP
+             * have direct effects. Of the remaining unary-arity node types,
+             * we can't easily prove that the operand never denotes an object
+             * with a toString or valueOf method.
+             */
+            *answer = JS_TRUE;
+            break;
         }
         break;
 
@@ -5736,14 +5736,10 @@ js_EmitTree(JSContext *cx, JSCodeGenerator *cg, JSParseNode *pn)
 
       case TOK_INC:
       case TOK_DEC:
-      {
-        intN depth;
-
         /* Emit lvalue-specialized code for ++/-- operators. */
         pn2 = pn->pn_kid;
         JS_ASSERT(pn2->pn_type != TOK_RP);
         op = pn->pn_op;
-        depth = cg->stackDepth;
         switch (pn2->pn_type) {
           case TOK_NAME:
             pn2->pn_op = op;
@@ -5767,18 +5763,15 @@ js_EmitTree(JSContext *cx, JSCodeGenerator *cg, JSParseNode *pn)
           case TOK_DOT:
             if (!EmitPropOp(cx, pn2, op, cg, JS_FALSE))
                 return JS_FALSE;
-            ++depth;
             break;
           case TOK_LB:
             if (!EmitElemOp(cx, pn2, op, cg))
                 return JS_FALSE;
-            depth += 2;
             break;
 #if JS_HAS_LVALUE_RETURN
           case TOK_LP:
             if (!js_EmitTree(cx, cg, pn2))
                 return JS_FALSE;
-            depth = cg->stackDepth;
             if (js_NewSrcNote2(cx, cg, SRC_PCBASE,
                                CG_OFFSET(cg) - pn2->pn_offset) < 0) {
                 return JS_FALSE;
@@ -5794,7 +5787,6 @@ js_EmitTree(JSContext *cx, JSCodeGenerator *cg, JSParseNode *pn)
                 return JS_FALSE;
             if (js_Emit1(cx, cg, JSOP_BINDXMLNAME) < 0)
                 return JS_FALSE;
-            depth = cg->stackDepth;
             if (js_Emit1(cx, cg, op) < 0)
                 return JS_FALSE;
             break;
@@ -5804,19 +5796,16 @@ js_EmitTree(JSContext *cx, JSCodeGenerator *cg, JSParseNode *pn)
         }
 
         /*
-         * Allocate another stack slot for GC protection in case the initial
-         * value being post-incremented or -decremented is not a number, but
-         * converts to a jsdouble.  In the TOK_NAME cases, op has 0 operand
-         * uses and 1 definition, so we don't need an extra stack slot -- we
-         * can use the one allocated for the def.
+         * Post-increments require an extra slot for GC protection in case
+         * the initial value being post-incremented or -decremented is not a
+         * number, but converts to a jsdouble.  In the TOK_NAME cases, op has
+         * 0 operand uses and 1 definition, so we don't need an extra stack
+         * slot -- we can use the one allocated for the def.
          */
-        if (pn2->pn_type != TOK_NAME &&
-            (js_CodeSpec[op].format & JOF_POST) &&
-            (uintN)depth == cg->maxStackDepth) {
-            ++cg->maxStackDepth;
-        }
+        JS_ASSERT(((js_CodeSpec[op].format >> JOF_TMPSLOT_SHIFT) & 1) ==
+                  ((js_CodeSpec[op].format & JOF_POST) &&
+                   pn2->pn_type != TOK_NAME));
         break;
-      }
 
       case TOK_DELETE:
         /*
@@ -5866,7 +5855,8 @@ js_EmitTree(JSContext *cx, JSCodeGenerator *cg, JSParseNode *pn)
           default:
             /*
              * If useless, just emit JSOP_TRUE; otherwise convert delete foo()
-             * to foo(), true (a comma expression, requiring SRC_PCDELTA).
+             * to foo(), true (a comma expression, requiring SRC_PCDELTA, and
+             * also JSOP_GROUP for correctly parenthesized decompilation).
              */
             useful = JS_FALSE;
             if (!CheckSideEffects(cx, &cg->treeContext, pn2, &useful))
@@ -5888,6 +5878,8 @@ js_EmitTree(JSContext *cx, JSCodeGenerator *cg, JSParseNode *pn)
                 if (!js_SetSrcNoteOffset(cx, cg, (uintN)noteIndex, 0, tmp-off))
                     return JS_FALSE;
             }
+            if (js_Emit1(cx, cg, JSOP_GROUP) < 0)
+                return JS_FALSE;
         }
         break;
 

@@ -64,10 +64,6 @@
 #include "jsscope.h"
 #include "jsscript.h"
 
-#ifdef PERLCONNECT
-#include "perlconnect/jsperl.h"
-#endif
-
 #ifdef LIVECONNECT
 #include "jsjava.h"
 #endif
@@ -653,13 +649,19 @@ ReadLine(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
         }
 
         /* Else, grow our buffer for another pass. */
-        tmp = JS_realloc(cx, buf, bufsize * 2);
+        bufsize *= 2;
+        if (bufsize > buflength) {
+            tmp = JS_realloc(cx, buf, bufsize);
+        } else {
+            JS_ReportOutOfMemory(cx);
+            tmp = NULL;
+        }
+
         if (!tmp) {
             JS_free(cx, buf);
             return JS_FALSE;
         }
 
-        bufsize *= 2;
         buf = tmp;
     }
 
@@ -696,18 +698,16 @@ ReadLine(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
 static JSBool
 Print(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
 {
-    uintN i, n;
+    uintN i;
     JSString *str;
 
-    for (i = n = 0; i < argc; i++) {
+    for (i = 0; i < argc; i++) {
         str = JS_ValueToString(cx, argv[i]);
         if (!str)
             return JS_FALSE;
         fprintf(gOutFile, "%s%s", i ? " " : "", JS_GetStringBytes(str));
     }
-    n++;
-    if (n)
-        fputc('\n', gOutFile);
+    fputc('\n', gOutFile);
     return JS_TRUE;
 }
 
@@ -2227,7 +2227,7 @@ static JSFunctionSpec shell_functions[] = {
     {"quit",            Quit,           0,0,0},
     {"gc",              GC,             0,0,0},
 #ifdef JS_GC_ZEAL
-    {"gczeal",        GCZeal,       1,0,0},
+    {"gczeal",          GCZeal,         1,0,0},
 #endif
     {"trap",            Trap,           3,0,0},
     {"untrap",          Untrap,         2,0,0},
@@ -3095,7 +3095,7 @@ snarf(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
             JS_ReportError(cx, "can't seek end of %s", pathname);
         } else {
             len = ftell(file);
-            if (fseek(file, 0, SEEK_SET) == EOF) {
+            if (len == -1 || fseek(file, 0, SEEK_SET) == EOF) {
                 JS_ReportError(cx, "can't seek start of %s", pathname);
             } else {
                 buf = JS_malloc(cx, len + 1);
@@ -3173,6 +3173,7 @@ main(int argc, char **argv, char **envp)
     if (!cx)
         return 1;
     JS_SetErrorReporter(cx, my_ErrorReporter);
+    JS_SetVersion(cx, JSVERSION_LATEST);
 
 #ifdef JS_THREADSAFE
     JS_BeginRequest(cx);
@@ -3197,11 +3198,6 @@ main(int argc, char **argv, char **envp)
         return 1;
     if (!JS_DefineFunctions(cx, it, its_methods))
         return 1;
-
-#ifdef PERLCONNECT
-    if (!JS_InitPerlClass(cx, glob))
-        return 1;
-#endif
 
 #ifdef JSDEBUGGER
     /*
