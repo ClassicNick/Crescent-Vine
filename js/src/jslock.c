@@ -224,7 +224,9 @@ js_FinishLock(JSThinLock *tl)
 #endif
 }
 
+#ifndef NSPR_LOCK
 static void js_Dequeue(JSThinLock *);
+#endif
 
 #ifdef DEBUG_SCOPE_COUNT
 
@@ -317,10 +319,12 @@ WillDeadlock(JSScope *scope, JSContext *cx)
  * (i) rt->gcLock held
  */
 static void
-ShareScope(JSRuntime *rt, JSScope *scope)
+ShareScope(JSContext *cx, JSScope *scope)
 {
+    JSRuntime *rt;
     JSScope **todop;
 
+    rt = cx->runtime;
     if (scope->u.link) {
         for (todop = &rt->scopeSharingTodo; *todop != scope;
              todop = &(*todop)->u.link) {
@@ -355,7 +359,7 @@ ShareScope(JSRuntime *rt, JSScope *scope)
     } else {
         scope->u.count = 0;
     }
-    js_FinishSharingScope(rt, scope);
+    js_FinishSharingScope(cx, scope);
 }
 
 /*
@@ -370,38 +374,48 @@ ShareScope(JSRuntime *rt, JSScope *scope)
  * The last bit of work done by js_FinishSharingScope nulls scope->ownercx and
  * updates rt->sharedScopes.
  */
-#define MAKE_STRING_IMMUTABLE(rt, v, vp)                                      \
-    JS_BEGIN_MACRO                                                            \
-        JSString *str_ = JSVAL_TO_STRING(v);                                  \
-        uint8 *flagp_ = js_GetGCThingFlags(str_);                             \
-        if (*flagp_ & GCF_MUTABLE) {                                          \
-            if (JSSTRING_IS_DEPENDENT(str_) &&                                \
-                !js_UndependString(NULL, str_)) {                             \
-                JS_RUNTIME_METER(rt, badUndependStrings);                     \
-                *vp = JSVAL_VOID;                                             \
-            } else {                                                          \
-                *flagp_ &= ~GCF_MUTABLE;                                      \
-            }                                                                 \
-        }                                                                     \
-    JS_END_MACRO
+
+static JSBool
+MakeStringImmutable(JSContext *cx, JSString *str)
+{
+    uint8 *flagp;
+
+    flagp = js_GetGCThingFlags(str);
+    if (*flagp & GCF_MUTABLE) {
+        if (JSSTRING_IS_DEPENDENT(str) && !js_UndependString(cx, str)) {
+            JS_RUNTIME_METER(cx->runtime, badUndependStrings);
+            return JS_FALSE;
+        }
+        *flagp &= ~GCF_MUTABLE;
+    }
+    return JS_TRUE;
+}
 
 void
-js_FinishSharingScope(JSRuntime *rt, JSScope *scope)
+js_FinishSharingScope(JSContext *cx, JSScope *scope)
 {
     JSObject *obj;
-    uint32 nslots;
-    jsval v, *vp, *end;
+    uint32 nslots, i;
+    jsval v;
 
     obj = scope->object;
-    nslots = JS_MIN(obj->map->freeslot, obj->map->nslots);
-    for (vp = obj->slots, end = vp + nslots; vp < end; vp++) {
-        v = *vp;
-        if (JSVAL_IS_STRING(v))
-            MAKE_STRING_IMMUTABLE(rt, v, vp);
+    nslots = LOCKED_OBJ_NSLOTS(obj);
+    for (i = 0; i != nslots; ++i) {
+        v = STOBJ_GET_SLOT(obj, i);
+        if (JSVAL_IS_STRING(v) &&
+            !MakeStringImmutable(cx, JSVAL_TO_STRING(v))) {
+            /*
+             * FIXME bug 363059: The following error recovery changes the
+             * execution semantic arbitrary and silently ignores any errors
+             * except out-of-memory, which should have been reported through
+             * JS_ReportOutOfMemory at this point.
+             */
+            STOBJ_SET_SLOT(obj, i, JSVAL_VOID);
+        }
     }
 
     scope->ownercx = NULL;  /* NB: set last, after lock init */
-    JS_RUNTIME_METER(rt, sharedScopes);
+    JS_RUNTIME_METER(cx->runtime, sharedScopes);
 }
 
 /*
@@ -482,7 +496,7 @@ ClaimScope(JSScope *scope, JSContext *cx)
         if (rt->gcThread == cx->thread ||
             (ownercx->scopeToShare &&
              WillDeadlock(ownercx->scopeToShare, cx))) {
-            ShareScope(rt, scope);
+            ShareScope(cx, scope);
             break;
         }
 
@@ -590,7 +604,7 @@ js_GetSlotThreadSafe(JSContext *cx, JSObject *obj, uint32 slot)
      */
     scope = OBJ_SCOPE(obj);
     JS_ASSERT(scope->ownercx != cx);
-    JS_ASSERT(obj->slots && slot < obj->map->freeslot);
+    JS_ASSERT(slot < obj->map->freeslot);
 
     /*
      * Avoid locking if called from the GC (see GC_AWARE_GET_SLOT in jsobj.h).
@@ -601,7 +615,7 @@ js_GetSlotThreadSafe(JSContext *cx, JSObject *obj, uint32 slot)
     if (CX_THREAD_IS_RUNNING_GC(cx) ||
         (SCOPE_IS_SEALED(scope) && scope->object == obj) ||
         (scope->ownercx && ClaimScope(scope, cx))) {
-        return obj->slots[slot];
+        return STOBJ_GET_SLOT(obj, slot);
     }
 
 #ifndef NSPR_LOCK
@@ -616,7 +630,7 @@ js_GetSlotThreadSafe(JSContext *cx, JSObject *obj, uint32 slot)
          * lock release followed by fat lock acquisition.
          */
         if (scope == OBJ_SCOPE(obj)) {
-            v = obj->slots[slot];
+            v = STOBJ_GET_SLOT(obj, slot);
             if (!js_CompareAndSwap(&tl->owner, me, 0)) {
                 /* Assert that scope locks never revert to flyweight. */
                 JS_ASSERT(scope->ownercx != cx);
@@ -630,12 +644,12 @@ js_GetSlotThreadSafe(JSContext *cx, JSObject *obj, uint32 slot)
             js_Dequeue(tl);
     }
     else if (Thin_RemoveWait(ReadWord(tl->owner)) == me) {
-        return obj->slots[slot];
+        return STOBJ_GET_SLOT(obj, slot);
     }
 #endif
 
     js_LockObj(cx, obj);
-    v = obj->slots[slot];
+    v = STOBJ_GET_SLOT(obj, slot);
 
     /*
      * Test whether cx took ownership of obj's scope during js_LockObj.
@@ -662,8 +676,11 @@ js_SetSlotThreadSafe(JSContext *cx, JSObject *obj, uint32 slot, jsval v)
 #endif
 
     /* Any string stored in a thread-safe object must be immutable. */
-    if (JSVAL_IS_STRING(v))
-        MAKE_STRING_IMMUTABLE(cx->runtime, v, &v);
+    if (JSVAL_IS_STRING(v) &&
+        !MakeStringImmutable(cx, JSVAL_TO_STRING(v))) {
+        /* FIXME bug 363059: See comments in js_FinishSharingScope. */
+        v = JSVAL_NULL;
+    }
 
     /*
      * We handle non-native objects via JSObjectOps.setRequiredSlot, as above
@@ -680,7 +697,7 @@ js_SetSlotThreadSafe(JSContext *cx, JSObject *obj, uint32 slot, jsval v)
      */
     scope = OBJ_SCOPE(obj);
     JS_ASSERT(scope->ownercx != cx);
-    JS_ASSERT(obj->slots && slot < obj->map->freeslot);
+    JS_ASSERT(slot < obj->map->freeslot);
 
     /*
      * Avoid locking if called from the GC (see GC_AWARE_GET_SLOT in jsobj.h).
@@ -691,7 +708,7 @@ js_SetSlotThreadSafe(JSContext *cx, JSObject *obj, uint32 slot, jsval v)
     if (CX_THREAD_IS_RUNNING_GC(cx) ||
         (SCOPE_IS_SEALED(scope) && scope->object == obj) ||
         (scope->ownercx && ClaimScope(scope, cx))) {
-        obj->slots[slot] = v;
+        STOBJ_SET_SLOT(obj, slot, v);
         return;
     }
 
@@ -701,7 +718,7 @@ js_SetSlotThreadSafe(JSContext *cx, JSObject *obj, uint32 slot, jsval v)
     JS_ASSERT(CURRENT_THREAD_IS_ME(me));
     if (js_CompareAndSwap(&tl->owner, 0, me)) {
         if (scope == OBJ_SCOPE(obj)) {
-            obj->slots[slot] = v;
+            STOBJ_SET_SLOT(obj, slot, v);
             if (!js_CompareAndSwap(&tl->owner, me, 0)) {
                 /* Assert that scope locks never revert to flyweight. */
                 JS_ASSERT(scope->ownercx != cx);
@@ -715,13 +732,13 @@ js_SetSlotThreadSafe(JSContext *cx, JSObject *obj, uint32 slot, jsval v)
             js_Dequeue(tl);
     }
     else if (Thin_RemoveWait(ReadWord(tl->owner)) == me) {
-        obj->slots[slot] = v;
+        STOBJ_SET_SLOT(obj, slot, v);
         return;
     }
 #endif
 
     js_LockObj(cx, obj);
-    obj->slots[slot] = v;
+    STOBJ_SET_SLOT(obj, slot, v);
 
     /*
      * Same drill as above, in js_GetSlotThreadSafe.  Note that we cannot
@@ -1039,12 +1056,13 @@ js_Unlock(JSThinLock *tl, jsword me)
     JS_ASSERT(CURRENT_THREAD_IS_ME(me));
 
     /*
-     * Since we can race with the CompareAndSwap in js_Enqueue, we need
-     * to use a C_A_S here as well -- Arjan van de Ven 30/1/08
+     * Only me can hold the lock, no need to use compare and swap atomic
+     * operation for this common case.
      */
-    if (js_CompareAndSwap(&tl->owner, me, 0))
+    if (tl->owner == me) {
+        tl->owner = 0;
         return;
-
+    }
     JS_ASSERT(Thin_GetWait(tl->owner));
     if (Thin_RemoveWait(ReadWord(tl->owner)) == me)
         js_Dequeue(tl);

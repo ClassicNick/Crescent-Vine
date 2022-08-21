@@ -115,10 +115,10 @@ js_GetDependentStringChars(JSString *str)
     return base->chars + start;
 }
 
-jschar *
-js_GetStringChars(JSString *str)
+const jschar *
+js_GetStringChars(JSContext *cx, JSString *str)
 {
-    if (JSSTRING_IS_DEPENDENT(str) && !js_UndependString(NULL, str))
+    if (JSSTRING_IS_DEPENDENT(str) && !js_UndependString(cx, str))
         return NULL;
 
     *js_GetGCThingFlags(str) &= ~GCF_MUTABLE;
@@ -207,10 +207,6 @@ js_ConcatStrings(JSContext *cx, JSString *left, JSString *right)
     return str;
 }
 
-/*
- * May be called with null cx by js_GetStringChars, above; and by the jslock.c
- * MAKE_STRING_IMMUTABLE file-local macro.
- */
 const jschar *
 js_UndependString(JSContext *cx, JSString *str)
 {
@@ -220,7 +216,7 @@ js_UndependString(JSContext *cx, JSString *str)
     if (JSSTRING_IS_DEPENDENT(str)) {
         n = JSSTRDEP_LENGTH(str);
         size = (n + 1) * sizeof(jschar);
-        s = (jschar *) (cx ? JS_malloc(cx, size) : malloc(size));
+        s = (jschar *) JS_malloc(cx, size);
         if (!s)
             return NULL;
 
@@ -230,7 +226,7 @@ js_UndependString(JSContext *cx, JSString *str)
         str->chars = s;
 
 #ifdef DEBUG
-        if (cx) {
+        {
             JSRuntime *rt = cx->runtime;
             JS_RUNTIME_UNMETER(rt, liveDependentStrings);
             JS_RUNTIME_UNMETER(rt, totalDependentStrings);
@@ -1134,6 +1130,7 @@ typedef struct GlobData {
 static JSBool
 match_or_replace(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
                  JSBool (*glob)(JSContext *cx, jsint count, GlobData *data),
+                 void (*destroy)(JSContext *cx, GlobData *data),
                  GlobData *data, jsval *rval)
 {
     JSString *str, *src, *opt;
@@ -1206,6 +1203,8 @@ match_or_replace(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
                     index++;
                 }
             }
+            if (!ok && destroy)
+                destroy(cx, data);
         }
     } else {
         if (GET_MODE(data->flags) == MODE_REPLACE) {
@@ -1249,7 +1248,7 @@ match_or_replace(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
     if (reobj) {
         /* Tell our caller that it doesn't need to destroy data->regexp. */
         data->flags &= ~KEEP_REGEXP;
-    } else if (!(data->flags & KEEP_REGEXP)) {
+    } else if (!ok || !(data->flags & KEEP_REGEXP)) {
         /* Caller didn't want to keep data->regexp, so null and destroy it.  */
         data->regexp = NULL;
         js_DestroyRegExp(cx, re);
@@ -1298,7 +1297,8 @@ str_match(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
     mdata.base.optarg = 1;
     mdata.arrayval = &argv[2];
     *mdata.arrayval = JSVAL_NULL;
-    ok = match_or_replace(cx, obj, argc, argv, match_glob, &mdata.base, rval);
+    ok = match_or_replace(cx, obj, argc, argv, match_glob, NULL, &mdata.base,
+                          rval);
     if (ok && !JSVAL_IS_NULL(*mdata.arrayval))
         *rval = *mdata.arrayval;
     return ok;
@@ -1311,7 +1311,7 @@ str_search(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
 
     data.flags = MODE_SEARCH;
     data.optarg = 1;
-    return match_or_replace(cx, obj, argc, argv, NULL, &data, rval);
+    return match_or_replace(cx, obj, argc, argv, NULL, NULL, &data, rval);
 }
 
 typedef struct ReplaceData {
@@ -1547,6 +1547,16 @@ do_replace(JSContext *cx, ReplaceData *rdata, jschar *chars)
     js_strncpy(chars, cp, JSSTRING_LENGTH(repstr) - (cp - bp));
 }
 
+static void
+replace_destroy(JSContext *cx, GlobData *data)
+{
+    ReplaceData *rdata;
+
+    rdata = (ReplaceData *)data;
+    JS_free(cx, rdata->chars);
+    rdata->chars = NULL;
+}
+
 static JSBool
 replace_glob(JSContext *cx, jsint count, GlobData *data)
 {
@@ -1571,11 +1581,8 @@ replace_glob(JSContext *cx, jsint count, GlobData *data)
          ? JS_realloc(cx, rdata->chars, (rdata->length + growth + 1)
                                         * sizeof(jschar))
          : JS_malloc(cx, (growth + 1) * sizeof(jschar)));
-    if (!chars) {
-        JS_free(cx, rdata->chars);
-        rdata->chars = NULL;
+    if (!chars)
         return JS_FALSE;
-    }
     rdata->chars = chars;
     rdata->length += growth;
     chars += rdata->index;
@@ -1617,9 +1624,6 @@ str_replace(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
     rdata.lambda = lambda;
     rdata.repstr = repstr;
     if (repstr) {
-        /* We're about to store pointers into the middle of our string. */
-        if (!JS_MakeStringImmutable(cx, repstr))
-            return JS_FALSE;
         rdata.dollarEnd = JSSTRING_CHARS(repstr) + JSSTRING_LENGTH(repstr);
         rdata.dollar = js_strchr_limit(JSSTRING_CHARS(repstr), '$',
                                        rdata.dollarEnd);
@@ -1631,7 +1635,8 @@ str_replace(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
     rdata.index = 0;
     rdata.leftIndex = 0;
 
-    ok = match_or_replace(cx, obj, argc, argv, replace_glob, &rdata.base, rval);
+    ok = match_or_replace(cx, obj, argc, argv, replace_glob, replace_destroy,
+                          &rdata.base, rval);
     if (!ok)
         return JS_FALSE;
 
@@ -1772,14 +1777,6 @@ find_split(JSContext *cx, JSString *str, JSRegExp *re, jsint *ip,
     }
 
     /*
-     * Deviate from ECMA by never splitting an empty string by any separator
-     * string into a non-empty array (an array of length 1 that contains the
-     * empty string).
-     */
-    if (!JS_VERSION_IS_ECMA(cx) && length == 0)
-        return -1;
-
-    /*
      * Special case: if sep is the empty string, split str into one character
      * substrings.  Let our caller worry about whether to split once at end of
      * string into an empty substring.
@@ -1905,16 +1902,7 @@ str_split(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
                 }
                 sep->chars = NULL;
             }
-
             i = j + sep->length;
-            if (!JS_VERSION_IS_ECMA(cx)) {
-                /*
-                 * Deviate from ECMA to imitate Perl, which omits a final
-                 * split unless a limit argument is given and big enough.
-                 */
-                if (!limited && (size_t)i == JSSTRING_LENGTH(str))
-                    break;
-            }
         }
         ok = (j != -2);
     }
@@ -2657,7 +2645,6 @@ JS_FRIEND_API(const char *)
 js_ValueToPrintable(JSContext *cx, jsval v, JSValueToStringFun v2sfun)
 {
     JSString *str;
-    const char *bytes;
 
     str = v2sfun(cx, v);
     if (!str)
@@ -2665,10 +2652,7 @@ js_ValueToPrintable(JSContext *cx, jsval v, JSValueToStringFun v2sfun)
     str = js_QuoteString(cx, str, 0);
     if (!str)
         return NULL;
-    bytes = js_GetStringBytes(cx->runtime, str);
-    if (!bytes)
-        JS_ReportOutOfMemory(cx);
-    return bytes;
+    return js_GetStringBytes(cx, str);
 }
 
 JS_FRIEND_API(JSString *)
@@ -2863,9 +2847,11 @@ js_InflateString(JSContext *cx, const char *bytes, size_t *length)
 char *
 js_DeflateString(JSContext *cx, const jschar *chars, size_t length)
 {
-    size_t size = 0;
-    char *bytes = NULL;
-    if (!js_DeflateStringToBuffer(cx, chars, length, NULL, &size))
+    size_t size;
+    char *bytes;
+
+    size = js_GetDeflatedStringLength(cx, chars, length);
+    if (size == (size_t)-1)
         return NULL;
     bytes = (char *) (cx ? JS_malloc(cx, size+1) : malloc(size+1));
     if (!bytes)
@@ -2873,6 +2859,51 @@ js_DeflateString(JSContext *cx, const jschar *chars, size_t length)
     js_DeflateStringToBuffer(cx, chars, length, bytes, &size);
     bytes[size] = 0;
     return bytes;
+}
+
+/*
+ * May be called with null cx through js_GetStringBytes, see below.
+ */
+size_t
+js_GetDeflatedStringLength(JSContext *cx, const jschar *chars,
+                           size_t charsLength)
+{
+    const jschar *end;
+    size_t length;
+    uintN c, c2;
+    char buffer[10];
+
+    length = charsLength;
+    for (end = chars + length; chars != end; chars++) {
+        c = *chars;
+        if (c < 0x80)
+            continue;
+        if (0xD800 <= c && c <= 0xDFFF) {
+            /* Surrogate pair. */
+            chars++;
+            if (c >= 0xDC00 || chars == end)
+                goto bad_surrogate;
+            c2 = *chars;
+            if (c2 < 0xDC00 || c2 > 0xDFFF)
+                goto bad_surrogate;
+            c = ((c - 0xD800) << 10) + (c2 - 0xDC00) + 0x10000;
+        }
+        c >>= 11;
+        length++;
+        while (c) {
+            c >>= 5;
+            length++;
+        }
+    }
+    return length;
+
+  bad_surrogate:
+    if (cx) {
+        JS_snprintf(buffer, 10, "0x%x", c);
+        JS_ReportErrorFlagsAndNumber(cx, JSREPORT_ERROR, js_GetErrorMessage,
+                                     NULL, JSMSG_BAD_SURROGATE_CHAR, buffer);
+    }
+    return (size_t)-1;
 }
 
 JSBool
@@ -2884,9 +2915,6 @@ js_DeflateStringToBuffer(JSContext *cx, const jschar *src, size_t srclen,
     uint32 v;
     uint8 utf8buf[6];
 
-    if (!dst)
-        dstlen = origDstlen = (size_t) -1;
-
     while (srclen) {
         c = *src++;
         srclen--;
@@ -2896,30 +2924,26 @@ js_DeflateStringToBuffer(JSContext *cx, const jschar *src, size_t srclen,
             v = c;
         } else {
             if (srclen < 1)
-                goto bufferTooSmall;
-            c2 = *src++;
-            srclen--;
-            if ((c2 < 0xDC00) || (c2 > 0xDFFF)) {
-                c = c2;
                 goto badSurrogate;
-            }
+            c2 = *src;
+            if ((c2 < 0xDC00) || (c2 > 0xDFFF))
+                goto badSurrogate;
+            src++;
+            srclen--;
             v = ((c - 0xD800) << 10) + (c2 - 0xDC00) + 0x10000;
         }
         if (v < 0x0080) {
             /* no encoding necessary - performance hack */
             if (!dstlen)
                 goto bufferTooSmall;
-            if (dst)
-                *dst++ = (char) v;
+            *dst++ = (char) v;
             utf8Len = 1;
         } else {
             utf8Len = js_OneUcs4ToUtf8Char(utf8buf, v);
             if (utf8Len > dstlen)
                 goto bufferTooSmall;
-            if (dst) {
-                for (i = 0; i < utf8Len; i++)
-                    *dst++ = (char) utf8buf[i];
-            }
+            for (i = 0; i < utf8Len; i++)
+                *dst++ = (char) utf8buf[i];
         }
         dstlen -= utf8Len;
     }
@@ -2928,14 +2952,9 @@ js_DeflateStringToBuffer(JSContext *cx, const jschar *src, size_t srclen,
 
 badSurrogate:
     *dstlenp = (origDstlen - dstlen);
-    if (cx) {
-        char buffer[10];
-        JS_snprintf(buffer, 10, "0x%x", c);
-        JS_ReportErrorFlagsAndNumber(cx, JSREPORT_ERROR,
-                                     js_GetErrorMessage, NULL,
-                                     JSMSG_BAD_SURROGATE_CHAR,
-                                     buffer);
-    }
+    /* Delegate error reporting to the measurement function. */
+    if (cx)
+        js_GetDeflatedStringLength(cx, src - 1, srclen + 1);
     return JS_FALSE;
 
 bufferTooSmall:
@@ -2971,7 +2990,7 @@ js_InflateStringToBuffer(JSContext *cx, const char *src, size_t srclen,
                 if ((src[j] & 0xC0) != 0x80)
                     goto badCharacter;
             }
-            v = Utf8ToOneUcs4Char(src, n);
+            v = Utf8ToOneUcs4Char((uint8 *)src, n);
             if (v >= 0x10000) {
                 v -= 0x10000;
                 if (v > 0xFFFFF || dstlen < 2) {
@@ -3070,6 +3089,13 @@ js_InflateString(JSContext *cx, const char *bytes, size_t *bytesLength)
     return chars;
 }
 
+size_t
+js_GetDeflatedStringLength(JSContext *cx, const jschar *chars,
+                           size_t charsLength)
+{
+    return charsLength;
+}
+
 JSBool
 js_DeflateStringToBuffer(JSContext* cx, const jschar *chars, size_t length,
                          char *bytes, size_t* bytesLength)
@@ -3130,17 +3156,20 @@ GetDeflatedStringCache(JSRuntime *rt)
 }
 
 JSBool
-js_SetStringBytes(JSRuntime *rt, JSString *str, char *bytes, size_t length)
+js_SetStringBytes(JSContext *cx, JSString *str, char *bytes, size_t length)
 {
+    JSRuntime *rt;
     JSHashTable *cache;
     JSBool ok;
     JSHashNumber hash;
     JSHashEntry **hep;
 
+    rt = cx->runtime;
     JS_ACQUIRE_LOCK(rt->deflatedStringCacheLock);
 
     cache = GetDeflatedStringCache(rt);
     if (!cache) {
+        js_ReportOutOfMemory(cx);
         ok = JS_FALSE;
     } else {
         hash = js_hash_string_pointer(str);
@@ -3157,18 +3186,28 @@ js_SetStringBytes(JSRuntime *rt, JSString *str, char *bytes, size_t length)
     return ok;
 }
 
-char *
-js_GetStringBytes(JSRuntime *rt, JSString *str)
+const char *
+js_GetStringBytes(JSContext *cx, JSString *str)
 {
+    JSRuntime *rt;
     JSHashTable *cache;
     char *bytes;
     JSHashNumber hash;
     JSHashEntry *he, **hep;
 
+    if (cx) {
+        rt = cx->runtime;
+    } else {
+        /* JS_GetStringBytes calls us with null cx. */
+        rt = js_GetGCStringRuntime(str);
+    }
+
     JS_ACQUIRE_LOCK(rt->deflatedStringCacheLock);
 
     cache = GetDeflatedStringCache(rt);
     if (!cache) {
+        if (cx)
+            js_ReportOutOfMemory(cx);
         bytes = NULL;
     } else {
         hash = js_hash_string_pointer(str);
@@ -3177,19 +3216,24 @@ js_GetStringBytes(JSRuntime *rt, JSString *str)
         if (he) {
             bytes = (char *) he->value;
 
+#ifndef JS_C_STRINGS_ARE_UTF8
             /* Try to catch failure to JS_ShutDown between runtime epochs. */
-            JS_ASSERT((*bytes == '\0' && JSSTRING_LENGTH(str) == 0) ||
-                      *bytes == (char) JSSTRING_CHARS(str)[0]);
+            JS_ASSERT_IF(*bytes != (char) JSSTRING_CHARS(str)[0],
+                         *bytes == '\0' && JSSTRING_LENGTH(str) == 0);
+#endif
         } else {
-            bytes = js_DeflateString(NULL, JSSTRING_CHARS(str),
-                                           JSSTRING_LENGTH(str));
+            bytes = js_DeflateString(cx, JSSTRING_CHARS(str),
+                                     JSSTRING_LENGTH(str));
             if (bytes) {
                 if (JS_HashTableRawAdd(cache, hep, hash, str, bytes)) {
 #ifdef DEBUG
                     rt->deflatedStringCacheBytes += JSSTRING_LENGTH(str);
 #endif
                 } else {
-                    free(bytes);
+                    if (cx)
+                        JS_free(cx, bytes);
+                    else
+                        free(bytes);
                     bytes = NULL;
                 }
             }
@@ -4505,15 +4549,17 @@ static JSBool
 AddCharsToURI(JSContext *cx, JSString *str, const jschar *chars, size_t length)
 {
     size_t total;
+    jschar *newchars;
 
     JS_ASSERT(!JSSTRING_IS_DEPENDENT(str));
     total = str->length + length + 1;
     if (!str->chars ||
         JS_HOWMANY(total, URI_CHUNK) > JS_HOWMANY(str->length + 1, URI_CHUNK)) {
         total = JS_ROUNDUP(total, URI_CHUNK);
-        str->chars = JS_realloc(cx, str->chars, total * sizeof(jschar));
-        if (!str->chars)
+        newchars = JS_realloc(cx, str->chars, total * sizeof(jschar));
+        if (!newchars)
             return JS_FALSE;
+        str->chars = newchars;
     }
     js_strncpy(str->chars + str->length, chars, length);
     str->length += length;
@@ -4819,3 +4865,117 @@ Utf8ToOneUcs4Char(const uint8 *utf8Buffer, int utf8Length)
     }
     return ucs4Char;
 }
+
+#if defined(DEBUG) ||                                                         \
+    defined(DUMP_CALL_TABLE) ||                                               \
+    defined(DUMP_SCOPE_STATS)
+size_t
+js_PutEscapedStringImpl(char *buffer, size_t bufferSize, FILE *fp,
+                        JSString *str, uint32 quote)
+{
+    jschar *chars, *charsEnd;
+    size_t n;
+    char *escape;
+    char c;
+    uintN u, hex, shift;
+    enum {
+        STOP, FIRST_QUOTE, LAST_QUOTE, CHARS, ESCAPE_START, ESCAPE_MORE
+    } state;
+
+    JS_ASSERT(quote == 0 || quote == '\'' || quote == '"');
+    JS_ASSERT_IF(buffer, bufferSize != 0);
+    JS_ASSERT_IF(!buffer, bufferSize == 0);
+    JS_ASSERT_IF(fp, !buffer);
+
+    chars = JSSTRING_CHARS(str);
+    charsEnd = chars + JSSTRING_LENGTH(str);
+    n = 0;
+    --bufferSize;
+    state = FIRST_QUOTE;
+    shift = 0;
+    hex = 0;
+    u = 0;
+    c = 0;  /* to quell GCC warnings */
+
+    for (;;) {
+        switch (state) {
+          case STOP:
+            goto stop;
+          case FIRST_QUOTE:
+            state = CHARS;
+            goto do_quote;
+          case LAST_QUOTE:
+            state = STOP;
+          do_quote:
+            if (quote == 0)
+                continue;
+            c = (char)quote;
+            break;
+          case CHARS:
+            if (chars == charsEnd) {
+                state = LAST_QUOTE;
+                continue;
+            }
+            u = *chars++;
+            if (u < ' ') {
+                if (u != 0) {
+                    escape = strchr(js_EscapeMap, (int)u);
+                    if (escape) {
+                        u = escape[1];
+                        goto do_escape;
+                    }
+                }
+                goto do_hex_escape;
+            }
+            if (u < 127) {
+                if (u == quote || u == '\\')
+                    goto do_escape;
+                c = (char)u;
+            } else if (u < 0x100) {
+                goto do_hex_escape;
+            } else {
+                shift = 16;
+                hex = u;
+                u = 'u';
+                goto do_escape;
+            }
+            break;
+          do_hex_escape:
+            shift = 8;
+            hex = u;
+            u = 'x';
+          do_escape:
+            c = '\\';
+            state = ESCAPE_START;
+            break;
+          case ESCAPE_START:
+            JS_ASSERT(' ' <= u && u < 127);
+            c = (char)u;
+            state = ESCAPE_MORE;
+            break;
+          case ESCAPE_MORE:
+            if (shift == 0) {
+                state = CHARS;
+                continue;
+            }
+            shift -= 4;
+            u = 0xF & (hex >> shift);
+            c = (char)(u + (u < 10 ? '0' : 'A' - 10));
+            break;
+        }
+        if (buffer) {
+            if (n == bufferSize)
+                break;
+            buffer[n] = c;
+        } else if (fp) {
+            fputc(c, fp);
+        }
+        n++;
+    }
+  stop:
+    if (buffer)
+        buffer[n] = '\0';
+    return n;
+}
+
+#endif

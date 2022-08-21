@@ -84,30 +84,39 @@ typedef enum JSOpLength {
 #define JOF_TABLESWITCHX  10      /* extended (32-bit offset) table switch */
 #define JOF_LOOKUPSWITCHX 11      /* extended (32-bit offset) lookup switch */
 #define JOF_UINT24        12      /* extended unsigned 24-bit literal (index) */
-#define JOF_LITOPX        13      /* JOF_UINT24 followed by op being extended,
-                                     where op if JOF_CONST has no unsigned 16-
-                                     bit immediate operand */
+#define JOF_2BYTE         13      /* 2-byte opcode, e.g., upper 8 bits of 24-bit
+                                     atom index */
 #define JOF_LOCAL         14      /* block-local operand stack variable */
 #define JOF_TYPEMASK      0x000f  /* mask for above immediate types */
 #define JOF_NAME          0x0010  /* name operation */
 #define JOF_PROP          0x0020  /* obj.prop operation */
 #define JOF_ELEM          0x0030  /* obj[index] operation */
-#define JOF_MODEMASK      0x0030  /* mask for above addressing modes */
-#define JOF_SET           0x0040  /* set (i.e., assignment) operation */
-#define JOF_DEL           0x0080  /* delete operation */
-#define JOF_DEC           0x0100  /* decrement (--, not ++) opcode */
-#define JOF_INC           0x0200  /* increment (++, not --) opcode */
-#define JOF_INCDEC        0x0300  /* increment or decrement opcode */
-#define JOF_POST          0x0400  /* postorder increment or decrement */
-#define JOF_IMPORT        0x0800  /* import property op */
-#define JOF_FOR           0x1000  /* for-in property op */
+#define JOF_XMLNAME       0x0040  /* XML name: *, a::b, @a, @a::b, etc. */
+#define JOF_VARPROP       0x0050  /* x.prop for arg, var, or local x */
+#define JOF_MODEMASK      0x0070  /* mask for above addressing modes */
+#define JOF_SET           0x0080  /* set (i.e., assignment) operation */
+#define JOF_DEL           0x0100  /* delete operation */
+#define JOF_DEC           0x0200  /* decrement (--, not ++) opcode */
+#define JOF_INC           0x0400  /* increment (++, not --) opcode */
+#define JOF_INCDEC        0x0600  /* increment or decrement opcode */
+#define JOF_POST          0x0800  /* postorder increment or decrement */
+#define JOF_IMPORT        0x1000  /* import property op */
+#define JOF_FOR           0x2000  /* for-in property op */
 #define JOF_ASSIGNING     JOF_SET /* hint for JSClass.resolve, used for ops
                                      that do simplex assignment */
-#define JOF_DETECTING     0x2000  /* object detection flag for JSNewResolveOp */
-#define JOF_BACKPATCH     0x4000  /* backpatch placeholder during codegen */
-#define JOF_LEFTASSOC     0x8000  /* left-associative operator */
-#define JOF_DECLARING    0x10000  /* var, const, or function declaration op */
-#define JOF_XMLNAME      0x20000  /* XML name: *, a::b, @a, @a::b, etc. */
+#define JOF_DETECTING     0x4000  /* object detection flag for JSNewResolveOp */
+#define JOF_BACKPATCH     0x8000  /* backpatch placeholder during codegen */
+#define JOF_LEFTASSOC    0x10000  /* left-associative operator */
+#define JOF_DECLARING    0x20000  /* var, const, or function declaration op */
+#define JOF_ATOMBASE     0x40000  /* atom segment base setting prefix op */
+#define JOF_CALLOP       0x80000  /* call operation pushing function and this */
+#define JOF_PARENHEAD   0x100000  /* opcode consumes value of expression in
+                                     parenthesized statement head */
+#define JOF_INVOKE      0x200000  /* JSOP_CALL, JSOP_NEW, JSOP_EVAL */
+
+/* Shorthands for mode from format and mode from opcode. */
+#define JOF_MODE(fmt)   ((fmt) & JOF_MODEMASK)
+#define JOF_OPMODE(op)  JOF_MODE(js_CodeSpec[op].format)
 
 #define JOF_TYPE_IS_EXTENDED_JUMP(t) \
     ((unsigned)((t) - JOF_JUMPX) <= (unsigned)(JOF_LOOKUPSWITCHX - JOF_JUMPX))
@@ -116,11 +125,19 @@ typedef enum JSOpLength {
  * Immediate operand getters, setters, and bounds.
  */
 
+/* Common uint16 immediate format helpers. */
+#define UINT16_LEN              2
+#define UINT16_HI(i)            ((jsbytecode)((i) >> 8))
+#define UINT16_LO(i)            ((jsbytecode)(i))
+#define GET_UINT16(pc)          ((uintN)(((pc)[1] << 8) | (pc)[2]))
+#define SET_UINT16(pc,i)        ((pc)[1] = UINT16_HI(i), (pc)[2] = UINT16_LO(i))
+#define UINT16_LIMIT            ((uintN)1 << 16)
+
 /* Short (2-byte signed offset) relative jump macros. */
 #define JUMP_OFFSET_LEN         2
 #define JUMP_OFFSET_HI(off)     ((jsbytecode)((off) >> 8))
 #define JUMP_OFFSET_LO(off)     ((jsbytecode)(off))
-#define GET_JUMP_OFFSET(pc)     ((int16)(((pc)[1] << 8) | (pc)[2]))
+#define GET_JUMP_OFFSET(pc)     ((int16)GET_UINT16(pc))
 #define SET_JUMP_OFFSET(pc,off) ((pc)[1] = JUMP_OFFSET_HI(off),               \
                                  (pc)[2] = JUMP_OFFSET_LO(off))
 #define JUMP_OFFSET_MIN         ((int16)0x8000)
@@ -137,7 +154,7 @@ typedef enum JSOpLength {
  * found (via binary search) by its "before span-dependency optimization" pc
  * offset (from script main entry point).
  */
-#define GET_SPANDEP_INDEX(pc)   ((uint16)(((pc)[1] << 8) | (pc)[2]))
+#define GET_SPANDEP_INDEX(pc)   ((uint16)GET_UINT16(pc))
 #define SET_SPANDEP_INDEX(pc,i) ((pc)[1] = JUMP_OFFSET_HI(i),                 \
                                  (pc)[2] = JUMP_OFFSET_LO(i))
 #define SPANDEP_INDEX_MAX       ((uint16)0xfffe)
@@ -161,18 +178,27 @@ typedef enum JSOpLength {
 /*
  * A literal is indexed by a per-script atom map.  Most scripts have relatively
  * few literals, so the standard JOF_CONST format specifies a fixed 16 bits of
- * immediate operand index.  A script with more than 64K literals must push all
- * high-indexed literals on the stack using JSOP_LITERAL, then use JOF_ELEM ops
- * instead of JOF_PROP, etc.
+ * immediate operand index.  A script with more than 64K literals must wrap the
+ * bytecode into JSOP_ATOMBASE and JSOP_RESETBASE pair.
  */
 #define ATOM_INDEX_LEN          2
 #define ATOM_INDEX_HI(i)        ((jsbytecode)((i) >> 8))
 #define ATOM_INDEX_LO(i)        ((jsbytecode)(i))
-#define GET_ATOM_INDEX(pc)      ((jsatomid)(((pc)[1] << 8) | (pc)[2]))
+#define GET_ATOM_INDEX(pc)      GET_UINT16(pc)
 #define SET_ATOM_INDEX(pc,i)    ((pc)[1] = ATOM_INDEX_HI(i),                  \
                                  (pc)[2] = ATOM_INDEX_LO(i))
-#define GET_ATOM(cx,script,pc)  js_GetAtom((cx), &(script)->atomMap,          \
-                                           GET_ATOM_INDEX(pc))
+
+#define ASSERT_ATOM_INDEX_IN_MAP(script,atoms,index)                          \
+    JS_ASSERT((size_t)((atoms) - (script)->atomMap.vector) <                  \
+              (size_t)(script)->atomMap.length - (size_t)(index))
+
+#define GET_ATOM(script,atoms,pc)                                             \
+    (ASSERT_ATOM_INDEX_IN_MAP(script,atoms,GET_ATOM_INDEX(pc)),               \
+     (atoms)[GET_ATOM_INDEX(pc)])
+
+#define GET_ATOMBASE(pc)        (JS_ASSERT(*(pc) == JSOP_ATOMBASE),           \
+                                 ((uintN)((pc)[1])) << 16)
+#define ATOMBASE_LEN            1
 
 /* A full atom index for JSOP_UINT24 uses 24 bits of immediate operand. */
 #define UINT24_HI(i)            ((jsbytecode)((i) >> 16))
@@ -185,27 +211,12 @@ typedef enum JSOpLength {
                                  (pc)[2] = UINT24_MID(i),                     \
                                  (pc)[3] = UINT24_LO(i))
 
-/* Same format for JSOP_LITERAL, etc., but future-proof with different names. */
-#define LITERAL_INDEX_LEN       3
-#define LITERAL_INDEX_HI(i)     UINT24_HI(i)
-#define LITERAL_INDEX_MID(i)    UINT24_MID(i)
-#define LITERAL_INDEX_LO(i)     UINT24_LO(i)
-#define GET_LITERAL_INDEX(pc)   GET_UINT24(pc)
-#define SET_LITERAL_INDEX(pc,i) SET_UINT24(pc,i)
-
 /* Atom index limit is determined by SN_3BYTE_OFFSET_FLAG, see jsemit.h. */
 #define ATOM_INDEX_LIMIT_LOG2   23
 #define ATOM_INDEX_LIMIT        ((uint32)1 << ATOM_INDEX_LIMIT_LOG2)
 
 JS_STATIC_ASSERT(sizeof(jsatomid) * JS_BITS_PER_BYTE >=
                  ATOM_INDEX_LIMIT_LOG2 + 1);
-
-/* Common uint16 immediate format helpers. */
-#define UINT16_HI(i)            ((jsbytecode)((i) >> 8))
-#define UINT16_LO(i)            ((jsbytecode)(i))
-#define GET_UINT16(pc)          ((uintN)(((pc)[1] << 8) | (pc)[2]))
-#define SET_UINT16(pc,i)        ((pc)[1] = UINT16_HI(i), (pc)[2] = UINT16_LO(i))
-#define UINT16_LIMIT            ((uintN)1 << 16)
 
 /* Actual argument count operand format helpers. */
 #define ARGC_HI(argc)           UINT16_HI(argc)
@@ -225,8 +236,6 @@ JS_STATIC_ASSERT(sizeof(jsatomid) * JS_BITS_PER_BYTE >=
 #define VARNO_LIMIT             UINT16_LIMIT
 
 struct JSCodeSpec {
-    const char          *name;          /* JS bytecode name */
-    const char          *token;         /* JS source literal or null */
     int8                length;         /* length including opcode byte */
     int8                nuses;          /* arity, -1 if variadic */
     int8                ndefs;          /* number of stack results */
@@ -236,7 +245,7 @@ struct JSCodeSpec {
 
 extern const JSCodeSpec js_CodeSpec[];
 extern uintN            js_NumCodeSpecs;
-extern const jschar     js_EscapeMap[];
+extern const char       js_EscapeMap[];
 
 /*
  * Return a GC'ed string containing the chars in str, with any non-printing
@@ -251,8 +260,17 @@ js_QuoteString(JSContext *cx, JSString *str, jschar quote);
  * value from js_GetPrinterOutput() is the printer's cumulative output, in
  * a GC'ed string.
  */
+
+#ifdef JS_ARENAMETER
+# define JS_NEW_PRINTER(cx, name, indent, pretty)                              \
+    js_NewPrinter(cx, name, indent, pretty)
+#else
+# define JS_NEW_PRINTER(cx, name, indent, pretty)                              \
+    js_NewPrinter(cx, indent, pretty)
+#endif
+
 extern JSPrinter *
-js_NewPrinter(JSContext *cx, const char *name, uintN indent, JSBool pretty);
+JS_NEW_PRINTER(JSContext *cx, const char *name, uintN indent, JSBool pretty);
 
 extern void
 js_DestroyPrinter(JSPrinter *jp);
@@ -265,6 +283,13 @@ js_printf(JSPrinter *jp, const char *format, ...);
 
 extern JSBool
 js_puts(JSPrinter *jp, const char *s);
+
+/*
+ * A slower version of GET_ATOM when the caller does not want to maintain
+ * the atom table segment register itself.
+ */
+extern JSAtom*
+js_GetAtomFromBytecode(JSScript *script, jsbytecode *pc, ptrdiff_t pcoff);
 
 #ifdef DEBUG
 /*
@@ -297,16 +322,18 @@ extern JSBool
 js_DecompileFunction(JSPrinter *jp, JSFunction *fun);
 
 /*
- * Find the source expression that resulted in v, and return a new string
- * containing it.  Fall back on v's string conversion (fallback) if we can't
- * find the bytecode that generated and pushed v on the operand stack.
+ * Find the source expression that resulted in v, and return a newly allocated
+ * C-string containing it.  Fall back on v's string conversion (fallback) if we
+ * can't find the bytecode that generated and pushed v on the operand stack.
  *
  * Search the current stack frame if spindex is JSDVG_SEARCH_STACK.  Don't
  * look for v on the stack if spindex is JSDVG_IGNORE_STACK.  Otherwise,
  * spindex is the negative index of v, measured from cx->fp->sp, or from a
  * lower frame's sp if cx->fp is native.
+ *
+ * The caller must call JS_free on the result after a succsesful call.
  */
-extern JSString *
+extern char *
 js_DecompileValueGenerator(JSContext *cx, intN spindex, jsval v,
                            JSString *fallback);
 

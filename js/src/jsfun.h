@@ -67,6 +67,7 @@ struct JSFunction {
     JSClass      *clasp;        /* if non-null, constructor for this class */
 };
 
+#define JSFUN_EXPR_CLOSURE   0x4000 /* expression closure: function(x)x*x */
 #define JSFUN_INTERPRETED    0x8000 /* use u.i if set, u.n if unset */
 
 #define FUN_INTERPRETED(fun) ((fun)->flags & JSFUN_INTERPRETED)
@@ -89,9 +90,6 @@ extern JS_FRIEND_DATA(JSClass) js_FunctionClass;
 extern JSBool
 js_fun_toString(JSContext *cx, JSObject *obj, uint32 indent,
                 uintN argc, jsval *argv, jsval *rval);
-
-extern JSBool
-js_IsIdentifier(JSString *str);
 
 extern JSObject *
 js_InitFunctionClass(JSContext *cx, JSObject *obj);

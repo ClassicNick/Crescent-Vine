@@ -126,16 +126,6 @@ JS_GetPositiveInfinityValue(JSContext *cx)
     return DOUBLE_TO_JSVAL(cx->runtime->jsPositiveInfinity);
 }
 
-JS_PUBLIC_API(JSObject *)
-JS_GetGlobalForObject(JSContext *cx, JSObject *obj)
-{
-    JSObject *parent;
-
-    while ((parent = OBJ_GET_PARENT(cx, obj)) != NULL)
-        obj = parent;
-    return obj;
-}
-
 JS_PUBLIC_API(jsval)
 JS_GetEmptyStringValue(JSContext *cx)
 {
@@ -247,12 +237,19 @@ JS_ConvertArgumentsVA(JSContext *cx, uintN argc, jsval *argv,
             if (!str)
                 return JS_FALSE;
             *sp = STRING_TO_JSVAL(str);
-            if (c == 's')
-                *va_arg(ap, char **) = JS_GetStringBytes(str);
-            else if (c == 'W')
-                *va_arg(ap, jschar **) = JS_GetStringChars(str);
-            else
+            if (c == 's') {
+                const char *bytes = js_GetStringBytes(cx, str);
+                if (!bytes)
+                    return JS_FALSE;
+                *va_arg(ap, const char **) = bytes;
+            } else if (c == 'W') {
+                const jschar *chars = js_GetStringChars(cx, str);
+                if (!chars)
+                    return JS_FALSE;
+                *va_arg(ap, const jschar **) = chars;
+            } else {
                 *va_arg(ap, JSString **) = str;
+            }
             break;
           case 'o':
             if (!js_ValueToObject(cx, *sp, &obj))
@@ -616,7 +613,7 @@ JS_TypeOfValue(JSContext *cx, jsval v)
                 clasp = OBJ_GET_CLASS(cx, obj);
                 if ((ops == &js_ObjectOps)
                     ? (clasp->call
-                       ? (clasp == &js_RegExpClass || clasp == &js_ScriptClass)
+                       ? clasp == &js_ScriptClass
                        : clasp == &js_FunctionClass)
                     : ops->call != NULL) {
                     type = JSTYPE_FUNCTION;
@@ -707,10 +704,8 @@ JS_NewRuntime(uint32 maxbytes)
     if (!js_InitGC(rt, maxbytes))
         goto bad;
 #ifdef JS_THREADSAFE
-    if (PR_FAILURE == PR_NewThreadPrivateIndex(&rt->threadTPIndex,
-                                               js_ThreadDestructorCB)) {
+    if (!js_InitThreadPrivateIndex(js_ThreadDestructorCB))
         goto bad;
-    }
     rt->gcLock = JS_NEW_LOCK();
     if (!rt->gcLock)
         goto bad;
@@ -739,8 +734,10 @@ JS_NewRuntime(uint32 maxbytes)
     if (!rt->scopeSharingDone)
         goto bad;
     rt->scopeSharingTodo = NO_SCOPE_SHARING_TODO;
+    rt->debuggerLock = JS_NEW_LOCK();
+    if (!rt->debuggerLock)
+        goto bad;
 #endif
-    rt->propertyCache.empty = JS_TRUE;
     if (!js_InitPropertyTree(rt))
         goto bad;
     return rt;
@@ -786,6 +783,8 @@ JS_DestroyRuntime(JSRuntime *rt)
         JS_DESTROY_CONDVAR(rt->setSlotDone);
     if (rt->scopeSharingDone)
         JS_DESTROY_CONDVAR(rt->scopeSharingDone);
+    if (rt->debuggerLock)
+        JS_DESTROY_LOCK(rt->debuggerLock);
 #else
     GSN_CACHE_CLEAR(&rt->gsnCache);
 #endif
@@ -796,6 +795,12 @@ JS_DestroyRuntime(JSRuntime *rt)
 JS_PUBLIC_API(void)
 JS_ShutDown(void)
 {
+#ifdef JS_OPMETER
+    extern void js_DumpOpMeters();
+
+    js_DumpOpMeters();
+#endif
+
     js_FinishDtoa();
 #ifdef JS_THREADSAFE
     js_CleanupLocks();
@@ -878,7 +883,7 @@ JS_EndRequest(JSContext *cx)
             if (js_DropObjectMap(cx, &scope->map, NULL)) {
                 js_InitLock(&scope->lock);
                 scope->u.count = 0;                 /* NULL may not pun as 0 */
-                js_FinishSharingScope(rt, scope);   /* set ownercx = NULL */
+                js_FinishSharingScope(cx, scope);   /* set ownercx = NULL */
                 nshares++;
             }
         }
@@ -1018,7 +1023,7 @@ JS_ContextIterator(JSRuntime *rt, JSContext **iterp)
 JS_PUBLIC_API(JSVersion)
 JS_GetVersion(JSContext *cx)
 {
-    return cx->version & JSVERSION_MASK;
+    return JSVERSION_NUMBER(cx);
 }
 
 JS_PUBLIC_API(JSVersion)
@@ -1029,7 +1034,7 @@ JS_SetVersion(JSContext *cx, JSVersion version)
     JS_ASSERT(version != JSVERSION_UNKNOWN);
     JS_ASSERT((version & ~JSVERSION_MASK) == 0);
 
-    oldVersion = cx->version & JSVERSION_MASK;
+    oldVersion = JSVERSION_NUMBER(cx);
     if (version == oldVersion)
         return oldVersion;
 
@@ -1117,7 +1122,7 @@ JS_ToggleOptions(JSContext *cx, uint32 options)
 JS_PUBLIC_API(const char *)
 JS_GetImplementationVersion(void)
 {
-    return "JavaScript-C 1.7.0 2007-10-03";
+    return "JavaScript-C 1.7 pre-release 3 2007-04-01";
 }
 
 
@@ -1190,35 +1195,12 @@ js_InitFunctionAndObjectClasses(JSContext *cx, JSObject *obj)
     }
 
     /* Initialize the function class first so constructors can be made. */
-    if (!js_GetClassPrototype(cx, obj, INT_TO_JSID(JSProto_Function),
-                              &fun_proto)) {
-        fun_proto = NULL;
+    fun_proto = js_InitFunctionClass(cx, obj);
+    if (!fun_proto)
         goto out;
-    }
-    if (!fun_proto) {
-        fun_proto = js_InitFunctionClass(cx, obj);
-        if (!fun_proto)
-            goto out;
-    } else {
-        JSObject *ctor;
-
-        ctor = JS_GetConstructor(cx, fun_proto);
-        if (!ctor) {
-            fun_proto = NULL;
-            goto out;
-        }
-        OBJ_DEFINE_PROPERTY(cx, obj, ATOM_TO_JSID(CLASS_ATOM(cx, Function)),
-                            OBJECT_TO_JSVAL(ctor), 0, 0, 0, NULL);
-    }
 
     /* Initialize the object class next so Object.prototype works. */
-    if (!js_GetClassPrototype(cx, obj, INT_TO_JSID(JSProto_Object),
-                              &obj_proto)) {
-        fun_proto = NULL;
-        goto out;
-    }
-    if (!obj_proto)
-        obj_proto = js_InitObjectClass(cx, obj);
+    obj_proto = js_InitObjectClass(cx, obj);
     if (!obj_proto) {
         fun_proto = NULL;
         goto out;
@@ -1695,6 +1677,7 @@ JS_malloc(JSContext *cx, size_t nbytes)
     void *p;
 
     JS_ASSERT(nbytes != 0);
+    JS_COUNT_OPERATION(cx, JSOW_ALLOCATION);
     if (nbytes == 0)
         nbytes = 1;
 
@@ -1711,6 +1694,7 @@ JS_malloc(JSContext *cx, size_t nbytes)
 JS_PUBLIC_API(void *)
 JS_realloc(JSContext *cx, void *p, size_t nbytes)
 {
+    JS_COUNT_OPERATION(cx, JSOW_ALLOCATION);
     p = realloc(p, nbytes);
     if (!p)
         JS_ReportOutOfMemory(cx);
@@ -1881,14 +1865,490 @@ JS_UnlockGCThingRT(JSRuntime *rt, void *thing)
 }
 
 JS_PUBLIC_API(void)
-JS_MarkGCThing(JSContext *cx, void *thing, const char *name, void *arg)
+JS_SetExtraGCRoots(JSRuntime *rt, JSTraceDataOp traceOp, void *data)
 {
-    JS_ASSERT(cx->runtime->gcLevel > 0);
-#ifdef JS_THREADSAFE
-    JS_ASSERT(cx->runtime->gcThread->id == js_CurrentThreadId());
+    rt->gcExtraRootsTraceOp = traceOp;
+    rt->gcExtraRootsData = data;
+}
+
+JS_PUBLIC_API(void)
+JS_TraceRuntime(JSTracer *trc)
+{
+    JSBool allAtoms = trc->context->runtime->gcKeepAtoms != 0;
+
+    js_TraceRuntime(trc, allAtoms);
+}
+
+#ifdef DEBUG
+
+#ifdef HAVE_XPCONNECT
+#include "dump_xpc.h"
 #endif
 
-    GC_MARK(cx, thing, name);
+JS_PUBLIC_API(void)
+JS_PrintTraceThingInfo(char *buf, size_t bufsize, JSTracer *trc,
+                       void *thing, uint32 kind, JSBool details)
+{
+    const char *name;
+    size_t n;
+
+    if (bufsize == 0)
+        return;
+
+    switch (kind) {
+      case JSTRACE_OBJECT:
+      {
+        JSObject *obj = (JSObject *)thing;
+        JSClass *clasp = STOBJ_GET_CLASS(obj);
+
+        name = clasp->name;
+#ifdef HAVE_XPCONNECT
+        if (clasp->flags & JSCLASS_PRIVATE_IS_NSISUPPORTS) {
+            jsval privateValue = STOBJ_GET_SLOT(obj, JSSLOT_PRIVATE);
+
+            JS_ASSERT(clasp->flags & JSCLASS_HAS_PRIVATE);
+            if (!JSVAL_IS_VOID(privateValue)) {
+                void  *privateThing = JSVAL_TO_PRIVATE(privateValue);
+                const char *xpcClassName = GetXPCObjectClassName(privateThing);
+
+                if (xpcClassName)
+                    name = xpcClassName;
+            }
+        }
+#endif
+        break;
+      }
+
+      case JSTRACE_STRING:
+        name = JSSTRING_IS_DEPENDENT((JSString *)thing)
+               ? "substring"
+               : "string";
+        break;
+
+      case JSTRACE_DOUBLE:
+        name = "double";
+        break;
+
+      case JSTRACE_FUNCTION:
+        name = "function";
+        break;
+
+      case JSTRACE_ATOM:
+        name = "atom";
+        break;
+
+#if JS_HAS_XML_SUPPORT
+      case JSTRACE_NAMESPACE:
+        name = "namespace";
+        break;
+
+      case JSTRACE_QNAME:
+        name = "qname";
+        break;
+
+      case JSTRACE_XML:
+        name = "xml";
+        break;
+#endif
+      default:
+        JS_ASSERT(0);
+        return;
+        break;
+    }
+
+    n = strlen(name);
+    if (n > bufsize - 1)
+        n = bufsize - 1;
+    memcpy(buf, name, n + 1);
+    buf += n;
+    bufsize -= n;
+
+    if (details && bufsize > 2) {
+        *buf++ = ' ';
+        bufsize--;
+
+        switch (kind) {
+          case JSTRACE_OBJECT:
+          {
+            JSObject  *obj = (JSObject *)thing;
+            jsval     privateValue = STOBJ_GET_SLOT(obj, JSSLOT_PRIVATE);
+            void      *privateThing = JSVAL_IS_VOID(privateValue)
+                                      ? NULL
+                                      : JSVAL_TO_PRIVATE(privateValue);
+
+            JS_snprintf(buf, bufsize, "%p", privateThing);
+            break;
+          }
+
+          case JSTRACE_STRING:
+            js_PutEscapedString(buf, bufsize, (JSString *)thing, 0);
+            break;
+
+          case JSTRACE_DOUBLE:
+            JS_snprintf(buf, bufsize, "%g", *(jsdouble *)thing);
+            break;
+
+          case JSTRACE_FUNCTION:
+          {
+            JSFunction *fun = (JSFunction *)thing;
+
+            if (fun->atom && ATOM_IS_STRING(fun->atom))
+                js_PutEscapedString(buf, bufsize, ATOM_TO_STRING(fun->atom), 0);
+            break;
+          }
+
+          case JSTRACE_ATOM:
+          {
+            JSAtom *atom = (JSAtom *)thing;
+
+            if (ATOM_IS_INT(atom))
+                JS_snprintf(buf, bufsize, "%d", ATOM_TO_INT(atom));
+            else if (ATOM_IS_STRING(atom))
+                js_PutEscapedString(buf, bufsize, ATOM_TO_STRING(atom), 0);
+            else
+                JS_snprintf(buf, bufsize, "object");
+            break;
+          }
+
+#if JS_HAS_XML_SUPPORT
+          case GCX_NAMESPACE:
+          {
+            JSXMLNamespace *ns = (JSXMLNamespace *)thing;
+
+            if (ns->prefix) {
+                n = js_PutEscapedString(buf, bufsize, ns->prefix, 0);
+                buf += n;
+                bufsize -= n;
+            }
+            if (bufsize > 2) {
+                *buf++ = ':';
+                bufsize--;
+                js_PutEscapedString(buf, bufsize, ns->uri, 0);
+            }
+            break;
+          }
+
+          case GCX_QNAME:
+          {
+            JSXMLQName *qn = (JSXMLQName *)thing;
+
+            if (qn->prefix) {
+                n = js_PutEscapedString(buf, bufsize, qn->prefix, 0);
+                buf += n;
+                bufsize -= n;
+            }
+            if (bufsize > 2) {
+                *buf++ = '(';
+                bufsize--;
+                n = js_PutEscapedString(buf, bufsize, qn->uri, 0);
+                buf += n;
+                bufsize -= n;
+                if (bufsize > 3) {
+                    *buf++ = ')';
+                    *buf++ = ':';
+                    bufsize -= 2;
+                    js_PutEscapedString(buf, bufsize, qn->localName, 0);
+                }
+            }
+            break;
+          }
+
+          case GCX_XML:
+          {
+            extern const char *js_xml_class_str[];
+            JSXML *xml = (JSXML *)thing;
+
+            JS_snprintf(buf, bufsize, "%s", js_xml_class_str[xml->xml_class]);
+            break;
+          }
+#endif
+          default:
+            JS_ASSERT(0);
+            break;
+        }
+    }
+    buf[bufsize - 1] = '\0';
+}
+
+typedef struct JSHeapDumpNode JSHeapDumpNode;
+
+struct JSHeapDumpNode {
+    void            *thing;
+    uint32          kind;
+    JSHeapDumpNode  *next;          /* next sibling */
+    JSHeapDumpNode  *parent;        /* node with the thing that refer to thing
+                                       from this node */
+    char            edgeName[1];    /* name of the edge from parent->thing
+                                       into thing */
+};
+
+typedef struct JSDumpingTracer {
+    JSTracer            base;
+    JSDHashTable        visited;
+    JSBool              ok;
+    void                *startThing;
+    void                *thingToFind;
+    void                *thingToIgnore;
+    JSHeapDumpNode      *parentNode;
+    JSHeapDumpNode      **lastNodep;
+    char                buffer[200];
+} JSDumpingTracer;
+
+static void
+DumpNotify(JSTracer *trc, void *thing, uint32 kind)
+{
+    JSDumpingTracer *dtrc;
+    JSContext *cx;
+    JSDHashEntryStub *entry;
+    JSHeapDumpNode *node;
+    const char *edgeName;
+    size_t edgeNameSize;
+
+    JS_ASSERT(trc->callback == DumpNotify);
+    dtrc = (JSDumpingTracer *)trc;
+
+    if (!dtrc->ok || thing == dtrc->thingToIgnore)
+        return;
+
+    cx = trc->context;
+
+    /*
+     * Check if we have already seen thing unless it is thingToFind to include
+     * it to the graph each time we reach it and print all live things that
+     * refer to thingToFind.
+     *
+     * This does not print all possible paths leading to thingToFind since
+     * when a thing A refers directly or indirectly to thingToFind and A is
+     * present several times in the graph, we will print only the first path
+     * leading to A and thingToFind, other ways to reach A will be ignored.
+     */
+    if (dtrc->thingToFind != thing) {
+        /*
+         * The startThing check allows to avoid putting startThing into the
+         * hash table before tracing startThing in JS_DumpHeap.
+         */
+        if (thing == dtrc->startThing)
+            return;
+        entry = (JSDHashEntryStub *)
+            JS_DHashTableOperate(&dtrc->visited, thing, JS_DHASH_ADD);
+        if (!entry) {
+            JS_ReportOutOfMemory(cx);
+            dtrc->ok = JS_FALSE;
+            return;
+        }
+        if (entry->key)
+            return;
+        entry->key = thing;
+    }
+
+    if (dtrc->base.debugPrinter) {
+        dtrc->base.debugPrinter(trc, dtrc->buffer, sizeof(dtrc->buffer));
+        edgeName = dtrc->buffer;
+    } else if (dtrc->base.debugPrintIndex != (size_t)-1) {
+        JS_snprintf(dtrc->buffer, sizeof(dtrc->buffer), "%s[%lu]",
+                    (const char *)dtrc->base.debugPrintArg,
+                    dtrc->base.debugPrintIndex);
+        edgeName = dtrc->buffer;
+    } else {
+        edgeName = (const char*)dtrc->base.debugPrintArg;
+    }
+
+    edgeNameSize = strlen(edgeName) + 1;
+    node = (JSHeapDumpNode *)
+        JS_malloc(cx, offsetof(JSHeapDumpNode, edgeName) + edgeNameSize);
+    if (!node) {
+        dtrc->ok = JS_FALSE;
+        return;
+    }
+
+    node->thing = thing;
+    node->kind = kind;
+    node->next = NULL;
+    node->parent = dtrc->parentNode;
+    memcpy(node->edgeName, edgeName, edgeNameSize);
+
+    JS_ASSERT(!*dtrc->lastNodep);
+    *dtrc->lastNodep = node;
+    dtrc->lastNodep = &node->next;
+}
+
+/* Dump node and the chain that leads to thing it contains. */
+static JSBool
+DumpNode(JSDumpingTracer *dtrc, FILE* fp, JSHeapDumpNode *node)
+{
+    JSHeapDumpNode *prev, *following;
+    size_t chainLimit;
+    JSBool ok;
+    enum { MAX_PARENTS_TO_PRINT = 10 };
+
+    JS_PrintTraceThingInfo(dtrc->buffer, sizeof dtrc->buffer,
+                           &dtrc->base, node->thing, node->kind, JS_TRUE);
+    if (fprintf(fp, "%p %-22s via ", node->thing, dtrc->buffer) < 0)
+        return JS_FALSE;
+
+    /*
+     * We need to print the parent chain in the reverse order. To do it in
+     * O(N) time where N is the chain length we first reverse the chain while
+     * searching for the top and then print each node while restoring the
+     * chain order.
+     */
+    chainLimit = MAX_PARENTS_TO_PRINT;
+    prev = NULL;
+    for (;;) {
+        following = node->parent;
+        node->parent = prev;
+        prev = node;
+        node = following;
+        if (!node)
+            break;
+        if (chainLimit == 0) {
+            if (fputs("...", fp) < 0)
+                return JS_FALSE;
+            break;
+        }
+        --chainLimit;
+    }
+
+    node = prev;
+    prev = following;
+    ok = JS_TRUE;
+    do {
+        /* Loop must continue even when !ok to restore the parent chain. */
+        if (ok) {
+            if (!prev) {
+                /* Print edge from some runtime root or startThing. */
+                if (fputs(node->edgeName, fp) < 0)
+                    ok = JS_FALSE;
+            } else {
+                JS_PrintTraceThingInfo(dtrc->buffer, sizeof dtrc->buffer,
+                                       &dtrc->base, prev->thing, prev->kind,
+                                       JS_FALSE);
+                if (fprintf(fp, "(%p %s).%s",
+                           prev->thing, dtrc->buffer, node->edgeName) < 0) {
+                    ok = JS_FALSE;
+                }
+            }
+        }
+        following = node->parent;
+        node->parent = prev;
+        prev = node;
+        node = following;
+    } while (node);
+
+    return ok && putc('\n', fp) >= 0;
+}
+
+JS_PUBLIC_API(JSBool)
+JS_DumpHeap(JSContext *cx, FILE *fp, void* startThing, uint32 startKind,
+            void *thingToFind, size_t maxDepth, void *thingToIgnore)
+{
+    JSDumpingTracer dtrc;
+    JSHeapDumpNode *node, *children, *next, *parent;
+    size_t depth;
+    JSBool thingToFindWasTraced;
+
+    if (maxDepth == 0)
+        return JS_TRUE;
+
+    JS_TRACER_INIT(&dtrc.base, cx, DumpNotify);
+    if (!JS_DHashTableInit(&dtrc.visited, JS_DHashGetStubOps(),
+                           NULL, sizeof(JSDHashEntryStub),
+                           JS_DHASH_DEFAULT_CAPACITY(100))) {
+        JS_ReportOutOfMemory(cx);
+        return JS_FALSE;
+    }
+    dtrc.ok = JS_TRUE;
+    dtrc.startThing = startThing;
+    dtrc.thingToFind = thingToFind;
+    dtrc.thingToIgnore = thingToIgnore;
+    dtrc.parentNode = NULL;
+    node = NULL;
+    dtrc.lastNodep = &node;
+    if (!startThing) {
+        JS_ASSERT(startKind == 0);
+        JS_TraceRuntime(&dtrc.base);
+    } else {
+        JS_TraceChildren(&dtrc.base, startThing, startKind);
+    }
+
+    depth = 1;
+    if (!node)
+        goto dump_out;
+
+    thingToFindWasTraced = thingToFind && thingToFind == startThing;
+    for (;;) {
+        /*
+         * Loop must continue even when !dtrc.ok to free all nodes allocated
+         * so far.
+         */
+        if (dtrc.ok) {
+            if (thingToFind == NULL || thingToFind == node->thing)
+                dtrc.ok = DumpNode(&dtrc, fp, node);
+
+            /* Descend into children. */
+            if (dtrc.ok &&
+                depth < maxDepth &&
+                (thingToFind != node->thing || !thingToFindWasTraced)) {
+                dtrc.parentNode = node;
+                children = NULL;
+                dtrc.lastNodep = &children;
+                JS_TraceChildren(&dtrc.base, node->thing, node->kind);
+                if (thingToFind == node->thing)
+                    thingToFindWasTraced = JS_TRUE;
+                if (children != NULL) {
+                    ++depth;
+                    node = children;
+                    continue;
+                }
+            }
+        }
+
+        /* Move to next or parents next and free the node. */
+        for (;;) {
+            next = node->next;
+            parent = node->parent;
+            JS_free(cx, node);
+            node = next;
+            if (node)
+                break;
+            if (!parent)
+                goto dump_out;
+            JS_ASSERT(depth > 1);
+            --depth;
+            node = parent;
+        }
+    }
+
+  dump_out:
+    JS_ASSERT(depth == 1);
+    JS_DHashTableFinish(&dtrc.visited);
+    return dtrc.ok;
+}
+
+#endif /* DEBUG */
+
+JS_PUBLIC_API(void)
+JS_MarkGCThing(JSContext *cx, void *thing, const char *name, void *arg)
+{
+    JSTracer *trc;
+
+    trc = (JSTracer *)arg;
+    if (!trc)
+        trc = cx->runtime->gcMarkingTracer;
+    else
+        JS_ASSERT(trc == cx->runtime->gcMarkingTracer);
+
+#ifdef JS_THREADSAFE
+    JS_ASSERT(cx->runtime->gcThread == trc->context->thread);
+#endif
+    JS_SET_TRACING_NAME(trc, name ? name : "unknown");
+    js_CallValueTracerIfGCThing(trc, (jsval)thing);
+}
+
+extern JS_PUBLIC_API(JSBool)
+JS_IsGCMarkingTracer(JSTracer *trc)
+{
+    return IS_GC_MARKING_TRACER(trc);
 }
 
 JS_PUBLIC_API(void)
@@ -1934,12 +2394,12 @@ JS_MaybeGC(JSContext *cx)
 
     /*
      * We run the GC if we used all available free GC cells and had to
-     * allocate extra 1/5 of GC arenas since the last run of GC, or if
+     * allocate extra 1/3 of GC arenas since the last run of GC, or if
      * we have malloc'd more bytes through JS_malloc than we were told
      * to allocate by JS_NewRuntime.
      *
      * The reason for
-     *   bytes > 6/5 lastBytes
+     *   bytes > 4/3 lastBytes
      * condition is the following. Bug 312238 changed bytes and lastBytes
      * to mean the total amount of memory that the GC uses now and right
      * after the last GC.
@@ -1963,23 +2423,23 @@ JS_MaybeGC(JSContext *cx)
      * Bl*(1-Fl) are bytes and lastBytes with the original meaning.
      *
      * Our task is to exclude F and Fl from the last statement. According
-     * the stats from bug 331770 Fl is about 20-30% for GC allocations
-     * that contribute to S and Sl for a typical run of the browser. It
-     * means that the original condition implied that we did not run GC
-     * unless we exhausted the pool of free cells. Indeed if we still
-     * have free cells, then B == Bl since we did not yet allocated any
-     * new arenas and the condition means
+     * to the stats from bug 331966 comment 23, Fl is about 10-25% for a
+     * typical run of the browser. It means that the original condition
+     * implied that we did not run GC unless we exhausted the pool of
+     * free cells. Indeed if we still have free cells, then B == Bl since
+     * we did not yet allocated any new arenas and the condition means
      *   1 - F > 3/2 (1-Fl) or 3/2Fl > 1/2 + F
      * That implies 3/2 Fl > 1/2 or Fl > 1/3. That can not be fulfilled
      * for the state described by the stats. So we can write the original
      * condition as:
      *   F == 0 && B > 3/2 Bl(1-Fl)
-     * Again using the stats we see that Fl is about 20% when the browser
+     * Again using the stats we see that Fl is about 11% when the browser
      * starts up and when we are far from hitting rt->gcMaxBytes. With
      * this F we have
-     * F == 0 && B > 3/2 Bl(1-0.8) or just B > 6/5 Bl.
+     * F == 0 && B > 3/2 Bl(1-0.11)
+     * or approximately F == 0 && B > 4/3 Bl.
      */
-    if ((bytes > 8192 && bytes > lastBytes + lastBytes / 5) ||
+    if ((bytes > 8192 && bytes > lastBytes + lastBytes / 3) ||
         rt->gcMallocBytes >= rt->gcMaxMallocBytes) {
         JS_GC(cx);
     }
@@ -2005,6 +2465,13 @@ JS_SetGCCallbackRT(JSRuntime *rt, JSGCCallback cb)
     oldcb = rt->gcCallback;
     rt->gcCallback = cb;
     return oldcb;
+}
+
+JS_PUBLIC_API(void)
+JS_SetGCThingCallback(JSContext *cx, JSGCThingCallback cb, void *closure)
+{
+    cx->runtime->gcThingCallback = cb;
+    cx->runtime->gcThingCallbackClosure = closure;
 }
 
 JS_PUBLIC_API(JSBool)
@@ -2094,7 +2561,7 @@ JS_ValueToId(JSContext *cx, jsval v, jsid *idp)
         *idp = INT_JSVAL_TO_JSID(v);
     } else {
 #if JS_HAS_XML_SUPPORT
-        if (!JSVAL_IS_PRIMITIVE(v)) {
+        if (JSVAL_IS_OBJECT(v)) {
             *idp = OBJECT_JSVAL_TO_JSID(v);
             return JS_TRUE;
         }
@@ -2254,6 +2721,7 @@ JS_InitClass(JSContext *cx, JSObject *obj, JSObject *parent_proto,
 
         /* Bootstrap Function.prototype (see also JS_InitStandardClasses). */
         if (OBJ_GET_CLASS(cx, ctor) == clasp) {
+            JS_ASSERT(!OBJ_GET_PROTO(cx, ctor));
             OBJ_SET_PROTO(cx, ctor, proto);
         }
     }
@@ -2357,7 +2825,7 @@ JS_GetPrototype(JSContext *cx, JSObject *obj)
     JSObject *proto;
 
     CHECK_REQUEST(cx);
-    proto = JSVAL_TO_OBJECT(GC_AWARE_GET_SLOT(cx, obj, JSSLOT_PROTO));
+    proto = GC_AWARE_GET_PROTO(cx, obj);
 
     /* Beware ref to dead object (we may be called from obj's finalizer). */
     return proto && proto->map ? proto : NULL;
@@ -2369,7 +2837,7 @@ JS_SetPrototype(JSContext *cx, JSObject *obj, JSObject *proto)
     CHECK_REQUEST(cx);
     if (obj->map->ops->setProto)
         return obj->map->ops->setProto(cx, obj, JSSLOT_PROTO, proto);
-    OBJ_SET_SLOT(cx, obj, JSSLOT_PROTO, OBJECT_TO_JSVAL(proto));
+    OBJ_SET_PROTO(cx, obj, proto);
     return JS_TRUE;
 }
 
@@ -2378,7 +2846,7 @@ JS_GetParent(JSContext *cx, JSObject *obj)
 {
     JSObject *parent;
 
-    parent = JSVAL_TO_OBJECT(GC_AWARE_GET_SLOT(cx, obj, JSSLOT_PARENT));
+    parent = GC_AWARE_GET_PARENT(cx, obj);
 
     /* Beware ref to dead object (we may be called from obj's finalizer). */
     return parent && parent->map ? parent : NULL;
@@ -2390,7 +2858,7 @@ JS_SetParent(JSContext *cx, JSObject *obj, JSObject *parent)
     CHECK_REQUEST(cx);
     if (obj->map->ops->setParent)
         return obj->map->ops->setParent(cx, obj, JSSLOT_PARENT, parent);
-    OBJ_SET_SLOT(cx, obj, JSSLOT_PARENT, OBJECT_TO_JSVAL(parent));
+    OBJ_SET_PARENT(cx, obj, parent);
     return JS_TRUE;
 }
 
@@ -2435,8 +2903,8 @@ JS_SealObject(JSContext *cx, JSObject *obj, JSBool deep)
 {
     JSScope *scope;
     JSIdArray *ida;
-    uint32 nslots;
-    jsval v, *vp, *end;
+    uint32 nslots, i;
+    jsval v;
 
     if (!OBJ_IS_NATIVE(obj)) {
         JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL,
@@ -2480,10 +2948,10 @@ JS_SealObject(JSContext *cx, JSObject *obj, JSBool deep)
     if (!deep)
         return JS_TRUE;
 
-    /* Walk obj->slots and if any value is a non-null object, seal it. */
-    nslots = JS_MIN(scope->map.freeslot, scope->map.nslots);
-    for (vp = obj->slots, end = vp + nslots; vp < end; vp++) {
-        v = *vp;
+    /* Walk slots in obj and if any value is a non-null object, seal it. */
+    nslots = LOCKED_OBJ_NSLOTS(obj);
+    for (i = 0; i != nslots; ++i) {
+        v = STOBJ_GET_SLOT(obj, i);
         if (JSVAL_IS_PRIMITIVE(v))
             continue;
         if (!JS_SealObject(cx, JSVAL_TO_OBJECT(v), deep))
@@ -3341,8 +3809,8 @@ prop_iter_finalize(JSContext *cx, JSObject *obj)
     }
 }
 
-static uint32
-prop_iter_mark(JSContext *cx, JSObject *obj, void *arg)
+static void
+prop_iter_trace(JSTracer *trc, JSObject *obj)
 {
     jsval v;
     jsint i, n;
@@ -3350,33 +3818,33 @@ prop_iter_mark(JSContext *cx, JSObject *obj, void *arg)
     JSIdArray *ida;
     jsid id;
 
-    v = GC_AWARE_GET_SLOT(cx, obj, JSSLOT_PRIVATE);
+    v = GC_AWARE_GET_SLOT(trc->context, obj, JSSLOT_PRIVATE);
     JS_ASSERT(!JSVAL_IS_VOID(v));
 
-    i = JSVAL_TO_INT(OBJ_GET_SLOT(cx, obj, JSSLOT_ITER_INDEX));
+    i = JSVAL_TO_INT(OBJ_GET_SLOT(trc->context, obj, JSSLOT_ITER_INDEX));
     if (i < 0) {
         /* Native case: just mark the next property to visit. */
         sprop = (JSScopeProperty *) JSVAL_TO_PRIVATE(v);
         if (sprop)
-            MARK_SCOPE_PROPERTY(cx, sprop);
+            TRACE_SCOPE_PROPERTY(trc, sprop);
     } else {
         /* Non-native case: mark each id in the JSIdArray private. */
         ida = (JSIdArray *) JSVAL_TO_PRIVATE(v);
         for (i = 0, n = ida->length; i < n; i++) {
             id = ida->vector[i];
-            MARK_ID(cx, id);
+            TRACE_ID(trc, id);
         }
     }
-    return 0;
 }
 
 static JSClass prop_iter_class = {
     "PropertyIterator",
-    JSCLASS_HAS_PRIVATE | JSCLASS_HAS_RESERVED_SLOTS(1),
+    JSCLASS_HAS_PRIVATE | JSCLASS_HAS_RESERVED_SLOTS(1) |
+    JSCLASS_MARK_IS_TRACE,
     JS_PropertyStub,  JS_PropertyStub, JS_PropertyStub, JS_PropertyStub,
     JS_EnumerateStub, JS_ResolveStub,  JS_ConvertStub,  prop_iter_finalize,
     NULL,             NULL,            NULL,            NULL,
-    NULL,             NULL,            prop_iter_mark,  NULL
+    NULL,             NULL,            JS_CLASS_TRACE(prop_iter_trace), NULL
 };
 
 JS_PUBLIC_API(JSObject *)
@@ -3417,11 +3885,11 @@ JS_NewPropertyIterator(JSContext *cx, JSObject *obj)
     }
 
     /* iterobj can not escape to other threads here. */
-    iterobj->slots[JSSLOT_PRIVATE] = PRIVATE_TO_JSVAL(pdata);
-    iterobj->slots[JSSLOT_ITER_INDEX] = INT_TO_JSVAL(index);
+    STOBJ_SET_SLOT(iterobj, JSSLOT_PRIVATE, PRIVATE_TO_JSVAL(pdata));
+    STOBJ_SET_SLOT(iterobj, JSSLOT_ITER_INDEX, INT_TO_JSVAL(index));
     return iterobj;
 
-  bad:
+bad:
     cx->weakRoots.newborn[GCX_OBJECT] = NULL;
     return NULL;
 }
@@ -3802,8 +4270,8 @@ CompileTokenStream(JSContext *cx, JSObject *obj, JSTokenStream *ts,
 
     CHECK_REQUEST(cx);
     eof = JS_FALSE;
-    JS_InitArenaPool(&codePool, "code", 1024, sizeof(jsbytecode));
-    JS_InitArenaPool(&notePool, "note", 1024, sizeof(jssrcnote));
+    JS_INIT_ARENA_POOL(&codePool, "code", 1024, sizeof(jsbytecode));
+    JS_INIT_ARENA_POOL(&notePool, "note", 1024, sizeof(jssrcnote));
     if (!js_InitCodeGenerator(cx, &cg, &codePool, &notePool,
                               ts->filename, ts->lineno,
                               ts->principals)) {
@@ -4006,19 +4474,17 @@ JS_CompileFileHandleForPrincipals(JSContext *cx, JSObject *obj,
 JS_PUBLIC_API(JSObject *)
 JS_NewScriptObject(JSContext *cx, JSScript *script)
 {
-    JSTempValueRooter tvr;
     JSObject *obj;
 
-    if (!script)
-        return js_NewObject(cx, &js_ScriptClass, NULL, NULL);
-
-    JS_PUSH_TEMP_ROOT_SCRIPT(cx, script, &tvr);
     obj = js_NewObject(cx, &js_ScriptClass, NULL, NULL);
-    if (obj) {
-        JS_SetPrivate(cx, obj, script);
+    if (!obj)
+        return NULL;
+
+    if (script) {
+        if (!JS_SetPrivate(cx, obj, script))
+            return NULL;
         script->object = obj;
     }
-    JS_POP_TEMP_ROOT(cx, &tvr);
     return obj;
 }
 
@@ -4099,7 +4565,6 @@ JS_CompileUCFunctionForPrincipals(JSContext *cx, JSObject *obj,
     JSTokenStream *ts;
     JSFunction *fun;
     JSAtom *funAtom, *argAtom;
-    JSTempValueRooter tvr;
     uintN i;
 
     CHECK_REQUEST(cx);
@@ -4107,7 +4572,7 @@ JS_CompileUCFunctionForPrincipals(JSContext *cx, JSObject *obj,
     ts = js_NewTokenStream(cx, chars, length, filename, lineno, principals);
     if (!ts) {
         fun = NULL;
-        goto out2;
+        goto out;
     }
     if (!name) {
         funAtom = NULL;
@@ -4115,15 +4580,12 @@ JS_CompileUCFunctionForPrincipals(JSContext *cx, JSObject *obj,
         funAtom = js_Atomize(cx, name, strlen(name), 0);
         if (!funAtom) {
             fun = NULL;
-            goto out2;
+            goto out;
         }
     }
     fun = js_NewFunction(cx, NULL, NULL, nargs, 0, obj, funAtom);
     if (!fun)
-        goto out2;
-
-    /* From this point the control must flow through the label out. */
-    JS_PUSH_TEMP_ROOT_OBJECT(cx, fun->object, &tvr);
+        goto out;
     if (nargs) {
         for (i = 0; i < nargs; i++) {
             argAtom = js_Atomize(cx, argnames[i], strlen(argnames[i]), 0);
@@ -4150,16 +4612,10 @@ JS_CompileUCFunctionForPrincipals(JSContext *cx, JSObject *obj,
         if (!OBJ_DEFINE_PROPERTY(cx, obj, ATOM_TO_JSID(funAtom),
                                  OBJECT_TO_JSVAL(fun->object),
                                  NULL, NULL, JSPROP_ENUMERATE, NULL)) {
-            fun = NULL;
-            goto out;
+            return NULL;
         }
     }
-    cx->weakRoots.newborn[GCX_OBJECT] = (JSGCThing *) fun->object;
-
-  out:
-    JS_POP_TEMP_ROOT(cx, &tvr);
-
-  out2:
+out:
     if (ts)
         js_CloseTokenStream(cx, ts);
     JS_ARENA_RELEASE(&cx->tempPool, mark);
@@ -4175,9 +4631,9 @@ JS_DecompileScript(JSContext *cx, JSScript *script, const char *name,
     JSString *str;
 
     CHECK_REQUEST(cx);
-    jp = js_NewPrinter(cx, name,
-                       indent & ~JS_DONT_PRETTY_PRINT,
-                       !(indent & JS_DONT_PRETTY_PRINT));
+    jp = JS_NEW_PRINTER(cx, name,
+                        indent & ~JS_DONT_PRETTY_PRINT,
+                        !(indent & JS_DONT_PRETTY_PRINT));
     if (!jp)
         return NULL;
     if (js_DecompileScript(jp, script))
@@ -4195,9 +4651,9 @@ JS_DecompileFunction(JSContext *cx, JSFunction *fun, uintN indent)
     JSString *str;
 
     CHECK_REQUEST(cx);
-    jp = js_NewPrinter(cx, JS_GetFunctionName(fun),
-                       indent & ~JS_DONT_PRETTY_PRINT,
-                       !(indent & JS_DONT_PRETTY_PRINT));
+    jp = JS_NEW_PRINTER(cx, "JS_DecompileFunction",
+                        indent & ~JS_DONT_PRETTY_PRINT,
+                        !(indent & JS_DONT_PRETTY_PRINT));
     if (!jp)
         return NULL;
     if (js_DecompileFunction(jp, fun))
@@ -4215,9 +4671,9 @@ JS_DecompileFunctionBody(JSContext *cx, JSFunction *fun, uintN indent)
     JSString *str;
 
     CHECK_REQUEST(cx);
-    jp = js_NewPrinter(cx, JS_GetFunctionName(fun),
-                       indent & ~JS_DONT_PRETTY_PRINT,
-                       !(indent & JS_DONT_PRETTY_PRINT));
+    jp = JS_NEW_PRINTER(cx, "JS_DecompileFunctionBody",
+                        indent & ~JS_DONT_PRETTY_PRINT,
+                        !(indent & JS_DONT_PRETTY_PRINT));
     if (!jp)
         return NULL;
     if (js_DecompileFunctionBody(jp, fun))
@@ -4469,7 +4925,7 @@ JS_RestoreFrameChain(JSContext *cx, JSStackFrame *fp)
     if (!fp)
         return;
 
-    JS_ASSERT(cx->dormantFrameChain == fp);
+    JS_ASSERT(fp == cx->dormantFrameChain);
     cx->fp = fp;
     cx->dormantFrameChain = fp->dormantNext;
     fp->dormantNext = NULL;
@@ -4499,7 +4955,7 @@ JS_NewString(JSContext *cx, char *bytes, size_t nbytes)
     }
 
     /* Hand off bytes to the deflated string cache, if possible. */
-    if (!js_SetStringBytes(cx->runtime, str, bytes, nbytes))
+    if (!js_SetStringBytes(cx, str, bytes, nbytes))
         JS_free(cx, bytes);
     return str;
 }
@@ -4596,22 +5052,24 @@ JS_InternUCString(JSContext *cx, const jschar *s)
 JS_PUBLIC_API(char *)
 JS_GetStringBytes(JSString *str)
 {
-    JSRuntime *rt;
-    char *bytes;
+    const char *bytes;
 
-    rt = js_GetGCStringRuntime(str);
-    bytes = js_GetStringBytes(rt, str);
-    return bytes ? bytes : "";
+    bytes = js_GetStringBytes(NULL, str);
+    return (char *)(bytes ? bytes : "");
 }
 
 JS_PUBLIC_API(jschar *)
 JS_GetStringChars(JSString *str)
 {
+    size_t n, size;
+    jschar *s;
+
     /*
-     * API botch (again, shades of JS_GetStringBytes): we have no cx to pass
-     * to js_UndependString (called by js_GetStringChars) for out-of-memory
-     * error reports, so js_UndependString passes NULL and suppresses errors.
-     * If it fails to convert a dependent string into an independent one, our
+     * API botch (again, shades of JS_GetStringBytes): we have no cx to report
+     * out-of-memory when undepending strings, so we replace js_UndependString
+     * with explicit malloc call and ignore its errors.
+     *
+     * If we fail to convert a dependent string into an independent one, our
      * caller will not be guaranteed a \u0000 terminator as a backstop.  This
      * may break some clients who already misbehave on embedded NULs.
      *
@@ -4619,10 +5077,20 @@ JS_GetStringChars(JSString *str)
      * rate bugs in string concatenation, is worth this slight loss in API
      * compatibility.
      */
-    jschar *chars;
+    if (JSSTRING_IS_DEPENDENT(str)) {
+        n = JSSTRDEP_LENGTH(str);
+        size = (n + 1) * sizeof(jschar);
+        s = (jschar *) malloc(size);
+        if (s) {
+            js_strncpy(s, JSSTRDEP_CHARS(str), n);
+            s[n] = 0;
+            str->length = n;
+            str->chars = s;
+        }
+    }
 
-    chars = js_GetStringChars(str);
-    return chars ? chars : JSSTRING_CHARS(str);
+    *js_GetGCThingFlags(str) &= ~GCF_MUTABLE;
+    return JSSTRING_CHARS(str);
 }
 
 JS_PUBLIC_API(size_t)
@@ -4681,6 +5149,18 @@ JS_PUBLIC_API(JSBool)
 JS_EncodeCharacters(JSContext *cx, const jschar *src, size_t srclen, char *dst,
                     size_t *dstlenp)
 {
+    size_t n;
+
+    if (!dst) {
+        n = js_GetDeflatedStringLength(cx, src, srclen);
+        if (n == (size_t)-1) {
+            *dstlenp = 0;
+            return JS_FALSE;
+        }
+        *dstlenp = n;
+        return JS_TRUE;
+    }
+
     return js_DeflateStringToBuffer(cx, src, srclen, dst, dstlenp);
 }
 
@@ -4830,7 +5310,7 @@ JS_SetRegExpInput(JSContext *cx, JSString *input, JSBool multiline)
     CHECK_REQUEST(cx);
     /* No locking required, cx is thread-private and input must be live. */
     res = &cx->regExpStatics;
-    res->pendingInput = input;
+    res->input = input;
     res->multiline = multiline;
     cx->runtime->gcPoke = JS_TRUE;
 }
@@ -4842,7 +5322,11 @@ JS_ClearRegExpStatics(JSContext *cx)
 
     /* No locking required, cx is thread-private and input must be live. */
     res = &cx->regExpStatics;
-    js_RegExpStatics_clear(cx, res);
+    res->input = NULL;
+    res->multiline = JS_FALSE;
+    res->parenCount = 0;
+    res->lastMatch = res->lastParen = js_EmptySubString;
+    res->leftContext = res->rightContext = js_EmptySubString;
     cx->runtime->gcPoke = JS_TRUE;
 }
 
@@ -4854,7 +5338,6 @@ JS_ClearRegExpRoots(JSContext *cx)
     /* No locking required, cx is thread-private and input must be live. */
     res = &cx->regExpStatics;
     res->input = NULL;
-    res->pendingInput = NULL;
     cx->runtime->gcPoke = JS_TRUE;
 }
 
@@ -4915,15 +5398,15 @@ JS_ReportPendingException(JSContext *cx)
     CHECK_REQUEST(cx);
 
     /*
-     * Set cx->creatingException to suppress the standard error-to-exception
+     * Set cx->generatingError to suppress the standard error-to-exception
      * conversion done by all {js,JS}_Report* functions except for OOM.  The
-     * cx->creatingException flag was added to suppress recursive divergence
+     * cx->generatingError flag was added to suppress recursive divergence
      * under js_ErrorToException, but it serves for our purposes here too.
      */
-    save = cx->creatingException;
-    cx->creatingException = JS_TRUE;
+    save = cx->generatingError;
+    cx->generatingError = JS_TRUE;
     ok = js_ReportUncaughtException(cx);
-    cx->creatingException = save;
+    cx->generatingError = save;
     return ok;
 }
 

@@ -39,6 +39,8 @@
 #ifndef jslock_h__
 #define jslock_h__
 
+JS_BEGIN_EXTERN_C
+
 #ifdef JS_THREADSAFE
 
 #include "jstypes.h"
@@ -149,7 +151,7 @@ js_GetSlotThreadSafe(JSContext *, JSObject *, uint32);
 extern void js_SetSlotThreadSafe(JSContext *, JSObject *, uint32, jsval);
 extern void js_InitLock(JSThinLock *);
 extern void js_FinishLock(JSThinLock *);
-extern void js_FinishSharingScope(JSRuntime *rt, JSScope *scope);
+extern void js_FinishSharingScope(JSContext *cx, JSScope *scope);
 
 #ifdef DEBUG
 
@@ -181,6 +183,9 @@ extern JSBool js_IsScopeLocked(JSContext *cx, JSScope *scope);
         JSRuntime *_rt = (cx)->runtime;                                       \
         JS_LOCK_RUNTIME_VOID(_rt, e);                                         \
     JS_END_MACRO
+
+/* FIXME: bug 353962 hackaround */
+#define JS_USE_ONLY_NSPR_LOCKS  1
 
 #if defined(JS_USE_ONLY_NSPR_LOCKS) ||                                        \
     !( (defined(_WIN32) && defined(_M_IX86)) ||                               \
@@ -259,5 +264,7 @@ extern JS_INLINE void js_Unlock(JSThinLock *tl, jsword me);
 
 #define JS_LOCK(P,CX)               JS_LOCK0(P, CX_THINLOCK_ID(CX))
 #define JS_UNLOCK(P,CX)             JS_UNLOCK0(P, CX_THINLOCK_ID(CX))
+
+JS_END_EXTERN_C
 
 #endif /* jslock_h___ */

@@ -45,6 +45,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include "jspubtd.h"
+#include "jsutil.h"
 
 JS_BEGIN_EXTERN_C
 
@@ -402,6 +403,10 @@ JS_GetTypeName(JSContext *cx, JSType type);
 
 /*
  * Initialization, locking, contexts, and memory allocation.
+ *
+ * It is important that the first runtime and first context be created in a
+ * single-threaded fashion, otherwise the behavior of the library is undefined.
+ * See: http://developer.mozilla.org/en/docs/Category:JSAPI_Reference
  */
 #define JS_NewRuntime       JS_Init
 #define JS_DestroyRuntime   JS_Finish
@@ -563,6 +568,15 @@ JS_StringToVersion(const char *string);
                                                    uncaught exceptions from
                                                    being converted to error
                                                    reports */
+
+#define JSOPTION_RELIMIT        JS_BIT(9)       /* Throw exception on any
+                                                   regular expression which
+                                                   backtracks more than n^3
+                                                   times, where n is length
+                                                   of the input string */
+#define JSOPTION_ANONFUNFIX     JS_BIT(10)      /* Disallow function () {} in
+                                                   statement context per
+                                                   ECMA-262 Edition 3. */
 
 extern JS_PUBLIC_API(uint32)
 JS_GetOptions(JSContext *cx);
@@ -801,9 +815,6 @@ JS_DumpNamedRoots(JSRuntime *rt,
                   void *data);
 #endif
 
-extern JS_PUBLIC_API(JSObject *)
-JS_GetGlobalForObject(JSContext *cx, JSObject *obj);
-
 /*
  * Call JS_MapGCRoots to map the GC's roots table using map(rp, name, data).
  * The root is pointed at by rp; if the root is unnamed, name is null; data is
@@ -845,21 +856,201 @@ extern JS_PUBLIC_API(JSBool)
 JS_UnlockGCThingRT(JSRuntime *rt, void *thing);
 
 /*
- * For implementors of JSObjectOps.mark, to mark a GC-thing reachable via a
- * property or other strong ref identified for debugging purposes by name.
- * The name argument's storage needs to live only as long as the call to
- * this routine.
+ * Register externally maintained GC roots.
  *
- * The final arg is used by GC_MARK_DEBUG code to build a ref path through
- * the GC's live thing graph.  Implementors of JSObjectOps.mark should pass
- * its final arg through to this function when marking all GC-things that are
- * directly reachable from the object being marked.
- *
- * See the JSMarkOp typedef in jspubtd.h, and the JSObjectOps struct below.
+ * traceOp: the trace operation. For each root the implementation should call
+ *          JS_CallTracer whenever the root contains a traceable thing.
+ * data:    the data argument to pass to each invocation of traceOp.
+ */
+extern JS_PUBLIC_API(void)
+JS_SetExtraGCRoots(JSRuntime *rt, JSTraceDataOp traceOp, void *data);
+
+/*
+ * For implementors of JSMarkOp. All new code should implement JSTraceOp
+ * instead.
  */
 extern JS_PUBLIC_API(void)
 JS_MarkGCThing(JSContext *cx, void *thing, const char *name, void *arg);
 
+/*
+ * JS_CallTracer API and related macros for implementors of JSTraceOp, to
+ * enumerate all references to traceable things reachable via a property or
+ * other strong ref identified for debugging purposes by name or index or
+ * a naming callaback.
+ *
+ * By definition references to traceable things include non-null pointers
+ * to JSObject, JSString and jsdouble and corresponding jsvals.
+ *
+ * See the JSTraceOp typedef in jspubtd.h.
+ */
+
+/* Trace kinds to pass to JS_Tracing. */
+#define JSTRACE_OBJECT  0
+#define JSTRACE_DOUBLE  1
+#define JSTRACE_STRING  2
+
+/*
+ * Use the following macros to check if a particular jsval is a traceable
+ * thing and to extract the thing and its kind to pass to JS_CallTracer.
+ */
+#define JSVAL_IS_TRACEABLE(v)   (JSVAL_IS_GCTHING(v) && !JSVAL_IS_NULL(v))
+#define JSVAL_TO_TRACEABLE(v)   (JSVAL_TO_GCTHING(v))
+#define JSVAL_TRACE_KIND(v)     (JSVAL_TAG(v) >> 1)
+
+JS_STATIC_ASSERT(JSVAL_TRACE_KIND(JSVAL_OBJECT) == JSTRACE_OBJECT);
+JS_STATIC_ASSERT(JSVAL_TRACE_KIND(JSVAL_DOUBLE) == JSTRACE_DOUBLE);
+JS_STATIC_ASSERT(JSVAL_TRACE_KIND(JSVAL_STRING) == JSTRACE_STRING);
+
+struct JSTracer {
+    JSContext           *context;
+    JSTraceCallback     callback;
+#ifdef DEBUG
+    JSTraceNamePrinter  debugPrinter;
+    const void          *debugPrintArg;
+    size_t              debugPrintIndex;
+#endif
+};
+
+/*
+ * The method to call on each reference to a traceable thing storted in a
+ * particular JSObject or other runtime structure. With DEBUG defined the
+ * caller before calling JS_CallTracer must initialize JSTracer fields
+ * describing the reference using the macros below.
+ */
+extern JS_PUBLIC_API(void)
+JS_CallTracer(JSTracer *trc, void *thing, uint32 kind);
+
+/*
+ * Set debugging information about a reference to a traceable thing to prepare
+ * for the following call to JS_CallTracer.
+ *
+ * When printer is null, arg must be const char * or char * C string naming
+ * the reference and index must be either (size_t)-1 indicating that the name
+ * alone describes the reference or it must be an index into some array vector
+ * that stores the reference.
+ *
+ * When printer callback is not null, the arg and index arguments are
+ * available to the callback as debugPrinterArg and debugPrintIndex fields
+ * of JSTracer.
+ *
+ * The storage for name or callback's arguments needs to live only until
+ * the following call to JS_CallTracer returns.
+ */
+#ifdef DEBUG
+# define JS_SET_TRACING_DETAILS(trc, printer, arg, index)                     \
+    JS_BEGIN_MACRO                                                            \
+        (trc)->debugPrinter = (printer);                                      \
+        (trc)->debugPrintArg = (arg);                                         \
+        (trc)->debugPrintIndex = (index);                                     \
+    JS_END_MACRO
+#else
+# define JS_SET_TRACING_DETAILS(trc, printer, arg, index)                     \
+    JS_BEGIN_MACRO                                                            \
+    JS_END_MACRO
+#endif
+
+/*
+ * Convenience macro to describe the argument of JS_CallTracer using C string
+ * and index.
+ */
+# define JS_SET_TRACING_INDEX(trc, name, index)                               \
+    JS_SET_TRACING_DETAILS(trc, NULL, name, index)
+
+/*
+ * Convenience macro to describe the argument of JS_CallTracer using C string.
+ */
+# define JS_SET_TRACING_NAME(trc, name)                                       \
+    JS_SET_TRACING_DETAILS(trc, NULL, name, (size_t)-1)
+
+/*
+ * Convenience macro to invoke JS_CallTracer using C string as the name for
+ * the reference to a traceable thing.
+ */
+# define JS_CALL_TRACER(trc, thing, kind, name)                               \
+    JS_BEGIN_MACRO                                                            \
+        JS_SET_TRACING_NAME(trc, name);                                       \
+        JS_CallTracer((trc), (thing), (kind));                                \
+    JS_END_MACRO
+
+/*
+ * Convenience macros to invoke JS_CallTracer when jsval represents a
+ * reference to a traceable thing.
+ */
+#define JS_CALL_VALUE_TRACER(trc, val, name)                                  \
+    JS_BEGIN_MACRO                                                            \
+        if (JSVAL_IS_TRACEABLE(val)) {                                        \
+            JS_CALL_TRACER((trc), JSVAL_TO_GCTHING(val),                      \
+                           JSVAL_TRACE_KIND(val), name);                      \
+        }                                                                     \
+    JS_END_MACRO
+
+#define JS_CALL_OBJECT_TRACER(trc, object, name)                              \
+    JS_BEGIN_MACRO                                                            \
+        JSObject *obj_ = (object);                                            \
+        JS_ASSERT(obj_);                                                      \
+        JS_CALL_TRACER((trc), obj_, JSTRACE_OBJECT, name);                    \
+    JS_END_MACRO
+
+#define JS_CALL_STRING_TRACER(trc, string, name)                              \
+    JS_BEGIN_MACRO                                                            \
+        JSString *str_ = (string);                                            \
+        JS_ASSERT(str_);                                                      \
+        JS_CALL_TRACER((trc), str_, JSTRACE_STRING, name);                    \
+    JS_END_MACRO
+
+#define JS_CALL_DOUBLE_TRACER(trc, number, name)                              \
+    JS_BEGIN_MACRO                                                            \
+        jsdouble *num_ = (number);                                            \
+        JS_ASSERT(num_);                                                      \
+        JS_CALL_TRACER((trc), num_, JSTRACE_DOUBLE, name);                    \
+    JS_END_MACRO
+
+/*
+ * API for JSTraceCallback implementations.
+ */
+# define JS_TRACER_INIT(trc, cx_, callback_)                                  \
+    JS_BEGIN_MACRO                                                            \
+        (trc)->context = (cx_);                                               \
+        (trc)->callback = (callback_);                                        \
+        JS_SET_TRACING_DETAILS(trc, NULL, NULL, (size_t)-1);                  \
+    JS_END_MACRO
+
+extern JS_PUBLIC_API(void)
+JS_TraceChildren(JSTracer *trc, void *thing, uint32 kind);
+
+extern JS_PUBLIC_API(void)
+JS_TraceRuntime(JSTracer *trc);
+
+#ifdef DEBUG
+
+extern JS_PUBLIC_API(void)
+JS_PrintTraceThingInfo(char *buf, size_t bufsize, JSTracer *trc,
+                       void *thing, uint32 kind, JSBool includeDetails);
+
+/*
+ * DEBUG-only method to dump the object graph of heap-allocated things.
+ *
+ * fp:              file for the dump output.
+ * start:           when non-null, dump only things reachable from start
+ *                  thing. Otherwise dump all things reachable from the
+ *                  runtime roots.
+ * startKind:       trace kind of start if start is not null. Must be 0 when
+ *                  start is null.
+ * thingToFind:     dump only paths in the object graph leading to thingToFind
+ *                  when non-null.
+ * maxDepth:        the upper bound on the number of edges to descend from the
+ *                  graph roots.
+ * thingToIgnore:   thing to ignore during the graph traversal when non-null.
+ */
+extern JS_PUBLIC_API(JSBool)
+JS_DumpHeap(JSContext *cx, FILE *fp, void* startThing, uint32 startKind,
+            void *thingToFind, size_t maxDepth, void *thingToIgnore);
+
+#endif
+
+/*
+ * Garbage collector API.
+ */
 extern JS_PUBLIC_API(void)
 JS_GC(JSContext *cx);
 
@@ -871,6 +1062,12 @@ JS_SetGCCallback(JSContext *cx, JSGCCallback cb);
 
 extern JS_PUBLIC_API(JSGCCallback)
 JS_SetGCCallbackRT(JSRuntime *rt, JSGCCallback cb);
+
+extern JS_PUBLIC_API(JSBool)
+JS_IsGCMarkingTracer(JSTracer *trc);
+
+extern JS_PUBLIC_API(void)
+JS_SetGCThingCallback(JSContext *cx, JSGCThingCallback cb, void *closure);
 
 extern JS_PUBLIC_API(JSBool)
 JS_IsAboutToBeFinalized(JSContext *cx, void *thing);
@@ -1016,6 +1213,9 @@ struct JSExtendedClass {
 #define JSCLASS_IS_ANONYMOUS            (1<<(JSCLASS_HIGH_FLAGS_SHIFT+1))
 #define JSCLASS_IS_GLOBAL               (1<<(JSCLASS_HIGH_FLAGS_SHIFT+2))
 
+/* Indicates that JSClass.mark is a tracer with JSTraceOp type. */
+#define JSCLASS_MARK_IS_TRACE           (1<<(JSCLASS_HIGH_FLAGS_SHIFT+3))
+
 /*
  * ECMA-262 requires that most constructors used internally create objects
  * with "the original Foo.prototype value" as their [[Prototype]] (__proto__)
@@ -1070,7 +1270,7 @@ struct JSObjectOps {
     JSHasInstanceOp     hasInstance;
     JSSetObjectSlotOp   setProto;
     JSSetObjectSlotOp   setParent;
-    JSMarkOp            mark;
+    JSTraceOp           trace;
     JSFinalizeOp        clear;
     JSGetRequiredSlotOp getRequiredSlot;
     JSSetRequiredSlotOp setRequiredSlot;
@@ -1838,15 +2038,15 @@ JS_SetCallReturnValue2(JSContext *cx, jsval v);
 /*
  * Saving and restoring frame chains.
  *
- * These two functions are used to set aside cx->fp while that frame is
- * inactive. After a call to JS_SaveFrameChain, it looks as if there is no
+ * These two functions are used to set aside cx's call stack while that stack
+ * is inactive. After a call to JS_SaveFrameChain, it looks as if there is no
  * code running on cx. Before calling JS_RestoreFrameChain, cx's call stack
  * must be balanced and all nested calls to JS_SaveFrameChain must have had
  * matching JS_RestoreFrameChain calls.
  *
  * JS_SaveFrameChain deals with cx not having any code running on it. A null
- * return does not signify an error and JS_RestoreFrameChain handles null
- * frames.
+ * return does not signify an error, and JS_RestoreFrameChain handles a null
+ * frame pointer argument safely.
  */
 extern JS_PUBLIC_API(JSStackFrame *)
 JS_SaveFrameChain(JSContext *cx);
@@ -2121,6 +2321,7 @@ JS_SetErrorReporter(JSContext *cx, JSErrorReporter er);
 #define JSREG_FOLD      0x01    /* fold uppercase to lowercase */
 #define JSREG_GLOB      0x02    /* global exec, creates array of matches */
 #define JSREG_MULTILINE 0x04    /* treat ^ and $ as begin and end of line */
+#define JSREG_STICKY    0x08    /* only match starting at lastIndex */
 
 extern JS_PUBLIC_API(JSObject *)
 JS_NewRegExpObject(JSContext *cx, char *bytes, size_t length, uintN flags);

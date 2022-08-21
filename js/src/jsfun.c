@@ -274,7 +274,7 @@ js_GetArgsObject(JSContext *cx, JSStackFrame *fp)
     global = fp->scopeChain;
     while ((parent = OBJ_GET_PARENT(cx, global)) != NULL)
         global = parent;
-    argsobj->slots[JSSLOT_PARENT] = OBJECT_TO_JSVAL(global);
+    STOBJ_SET_PARENT(argsobj, global);
     fp->argsobj = argsobj;
     return argsobj;
 }
@@ -453,10 +453,7 @@ args_resolve(JSContext *cx, JSObject *obj, jsval id, uintN flags,
             if (!js_DefineProperty(cx, obj, INT_JSVAL_TO_JSID(id),
                                    fp->argv[slot],
                                    args_getProperty, args_setProperty,
-                                   JS_VERSION_IS_ECMA(cx)
-                                   ? 0
-                                   : JSPROP_ENUMERATE,
-                                   NULL)) {
+                                   0, NULL)) {
                 return JS_FALSE;
             }
             *objp = obj;
@@ -547,18 +544,19 @@ args_enumerate(JSContext *cx, JSObject *obj)
  * If a generator-iterator's arguments or call object escapes, it needs to
  * mark its generator object.
  */
-static uint32
-args_or_call_mark(JSContext *cx, JSObject *obj, void *arg)
+static void
+args_or_call_trace(JSTracer *trc, JSObject *obj)
 {
     JSStackFrame *fp;
 
-    fp = JS_GetPrivate(cx, obj);
-    if (fp && (fp->flags & JSFRAME_GENERATOR))
-        GC_MARK(cx, FRAME_TO_GENERATOR(fp)->obj, "FRAME_TO_GENERATOR(fp)->obj");
-    return 0;
+    fp = JS_GetPrivate(trc->context, obj);
+    if (fp && (fp->flags & JSFRAME_GENERATOR)) {
+        JS_CALL_OBJECT_TRACER(trc, FRAME_TO_GENERATOR(fp)->obj,
+                              "FRAME_TO_GENERATOR(fp)->obj");
+    }
 }
 #else
-# define args_or_call_mark NULL
+# define args_or_call_trace NULL
 #endif
 
 /*
@@ -575,7 +573,7 @@ args_or_call_mark(JSContext *cx, JSObject *obj, void *arg)
 JSClass js_ArgumentsClass = {
     js_Object_str,
     JSCLASS_HAS_PRIVATE | JSCLASS_NEW_RESOLVE | JSCLASS_HAS_RESERVED_SLOTS(1) |
-    JSCLASS_HAS_CACHED_PROTO(JSProto_Object),
+    JSCLASS_MARK_IS_TRACE | JSCLASS_HAS_CACHED_PROTO(JSProto_Object),
     JS_PropertyStub,    args_delProperty,
     args_getProperty,   args_setProperty,
     args_enumerate,     (JSResolveOp) args_resolve,
@@ -583,7 +581,7 @@ JSClass js_ArgumentsClass = {
     NULL,               NULL,
     NULL,               NULL,
     NULL,               NULL,
-    args_or_call_mark,  NULL
+    JS_CLASS_TRACE(args_or_call_trace), NULL
 };
 
 JSObject *
@@ -939,7 +937,7 @@ call_convert(JSContext *cx, JSObject *obj, JSType type, jsval *vp)
 JSClass js_CallClass = {
     js_Call_str,
     JSCLASS_HAS_PRIVATE | JSCLASS_NEW_RESOLVE | JSCLASS_IS_ANONYMOUS |
-    JSCLASS_HAS_CACHED_PROTO(JSProto_Call),
+    JSCLASS_MARK_IS_TRACE | JSCLASS_HAS_CACHED_PROTO(JSProto_Call),
     JS_PropertyStub,    JS_PropertyStub,
     call_getProperty,   call_setProperty,
     call_enumerate,     (JSResolveOp)call_resolve,
@@ -947,7 +945,7 @@ JSClass js_CallClass = {
     NULL,               NULL,
     NULL,               NULL,
     NULL,               NULL,
-    args_or_call_mark,  NULL,
+    JS_CLASS_TRACE(args_or_call_trace), NULL,
 };
 
 /*
@@ -1094,21 +1092,16 @@ fun_resolve(JSContext *cx, JSObject *obj, jsval id, uintN flags,
     JSString *str;
     JSAtom *prototypeAtom;
 
-    /*
-     * No need to reflect fun.prototype in 'fun.prototype = ...' or in an
-     * unqualified reference to prototype, which the emitter looks up as a
-     * hidden atom when attempting to bind to a formal parameter or local
-     * variable slot.
-     */
-    if (flags & (JSRESOLVE_ASSIGNING | JSRESOLVE_HIDDEN))
-        return JS_TRUE;
-
     if (!JSVAL_IS_STRING(id))
         return JS_TRUE;
 
     /* No valid function object should lack private data, but check anyway. */
     fun = (JSFunction *)JS_GetInstancePrivate(cx, obj, &js_FunctionClass, NULL);
     if (!fun || !fun->object)
+        return JS_TRUE;
+
+    /* No need to reflect fun.prototype in 'fun.prototype = ...'. */
+    if (flags & JSRESOLVE_ASSIGNING)
         return JS_TRUE;
 
     /*
@@ -1199,10 +1192,17 @@ fun_finalize(JSContext *cx, JSObject *obj)
     fun = (JSFunction *) JS_GetPrivate(cx, obj);
     if (!fun)
         return;
+
     if (fun->object == obj)
         fun->object = NULL;
 
-    /* Null-check required since the parser sets interpreted very early. */
+    /*
+     * Null-check of i.script is required since the parser sets interpreted
+     * very early.
+     *
+     * Here js_IsAboutToBeFinalized works because obj is finalized before
+     * JSFunction. See comments in js_GC before the finalization loop.
+     */
     if (FUN_INTERPRETED(fun) && fun->u.i.script &&
         js_IsAboutToBeFinalized(cx, fun))
     {
@@ -1418,7 +1418,6 @@ static JSBool
 fun_hasInstance(JSContext *cx, JSObject *obj, jsval v, JSBool *bp)
 {
     jsval pval;
-    JSString *str;
 
     if (!OBJ_GET_PROPERTY(cx, obj,
                           ATOM_TO_JSID(cx->runtime->atomState
@@ -1432,31 +1431,27 @@ fun_hasInstance(JSContext *cx, JSObject *obj, jsval v, JSBool *bp)
          * Throw a runtime error if instanceof is called on a function that
          * has a non-object as its .prototype value.
          */
-        str = js_DecompileValueGenerator(cx, -1, OBJECT_TO_JSVAL(obj), NULL);
-        if (str) {
-            JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL,
-                                 JSMSG_BAD_PROTOTYPE, JS_GetStringBytes(str));
-        }
+        js_ReportValueError(cx, JSMSG_BAD_PROTOTYPE,
+                            -1, OBJECT_TO_JSVAL(obj), NULL);
         return JS_FALSE;
     }
 
     return js_IsDelegate(cx, JSVAL_TO_OBJECT(pval), v, bp);
 }
 
-static uint32
-fun_mark(JSContext *cx, JSObject *obj, void *arg)
+static void
+fun_trace(JSTracer *trc, JSObject *obj)
 {
     JSFunction *fun;
 
-    fun = (JSFunction *) JS_GetPrivate(cx, obj);
+    fun = (JSFunction *) JS_GetPrivate(trc->context, obj);
     if (fun) {
-        GC_MARK(cx, fun, "private");
+        JS_CALL_TRACER(trc, fun, JSTRACE_FUNCTION, "private");
         if (fun->atom)
-            GC_MARK_ATOM(cx, fun->atom);
+            JS_CALL_TRACER(trc, fun->atom, JSTRACE_ATOM, "name");
         if (FUN_INTERPRETED(fun) && fun->u.i.script)
-            js_MarkScript(cx, fun->u.i.script);
+            js_TraceScript(trc, fun->u.i.script);
     }
-    return 0;
 }
 
 static uint32
@@ -1476,7 +1471,7 @@ fun_reserveSlots(JSContext *cx, JSObject *obj)
 JS_FRIEND_DATA(JSClass) js_FunctionClass = {
     js_Function_str,
     JSCLASS_HAS_PRIVATE | JSCLASS_NEW_RESOLVE | JSCLASS_HAS_RESERVED_SLOTS(2) |
-    JSCLASS_HAS_CACHED_PROTO(JSProto_Function),
+    JSCLASS_MARK_IS_TRACE | JSCLASS_HAS_CACHED_PROTO(JSProto_Function),
     JS_PropertyStub,  JS_PropertyStub,
     fun_getProperty,  JS_PropertyStub,
     fun_enumerate,    (JSResolveOp)fun_resolve,
@@ -1484,7 +1479,7 @@ JS_FRIEND_DATA(JSClass) js_FunctionClass = {
     NULL,             NULL,
     NULL,             NULL,
     fun_xdrObject,    fun_hasInstance,
-    fun_mark,         fun_reserveSlots
+    JS_CLASS_TRACE(fun_trace), fun_reserveSlots
 };
 
 JSBool
@@ -1570,10 +1565,14 @@ fun_call(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
     if (!VALUE_IS_FUNCTION(cx, fval)) {
         str = JS_ValueToString(cx, fval);
         if (str) {
-            JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL,
-                                 JSMSG_INCOMPATIBLE_PROTO,
-                                 js_Function_str, call_str,
-                                 JS_GetStringBytes(str));
+            const char *bytes = js_GetStringBytes(cx, str);
+
+            if (bytes) {
+                JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL,
+                                     JSMSG_INCOMPATIBLE_PROTO,
+                                     js_Function_str, call_str,
+                                     bytes);
+            }
         }
         return JS_FALSE;
     }
@@ -1639,10 +1638,14 @@ fun_apply(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
     if (!VALUE_IS_FUNCTION(cx, fval)) {
         str = JS_ValueToString(cx, fval);
         if (str) {
-            JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL,
-                                 JSMSG_INCOMPATIBLE_PROTO,
-                                 js_Function_str, "apply",
-                                 JS_GetStringBytes(str));
+            const char *bytes = js_GetStringBytes(cx, str);
+
+            if (bytes) {
+                JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL,
+                                     JSMSG_INCOMPATIBLE_PROTO,
+                                     js_Function_str, "apply",
+                                     bytes);
+            }
         }
         return JS_FALSE;
     }
@@ -1773,28 +1776,6 @@ static JSFunctionSpec function_methods[] = {
     {0,0,0,0,0}
 };
 
-JSBool
-js_IsIdentifier(JSString *str)
-{
-    size_t length;
-    jschar c, *chars, *end, *s;
-
-    length = JSSTRING_LENGTH(str);
-    if (length == 0)
-        return JS_FALSE;
-    chars = JSSTRING_CHARS(str);
-    c = *chars;
-    if (!JS_ISIDSTART(c))
-        return JS_FALSE;
-    end = chars + length;
-    for (s = chars + 1; s != end; ++s) {
-        c = *s;
-        if (!JS_ISIDENT(c))
-            return JS_FALSE;
-    }
-    return !js_IsKeyword(chars, length);
-}
-
 static JSBool
 Function(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
 {
@@ -1855,8 +1836,9 @@ Function(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
     JS_ASSERT(!fp->script && fp->fun && fp->fun->u.n.native == Function);
     caller = JS_GetScriptedCaller(cx, fp);
     if (caller) {
+        filename = caller->script->filename;
+        lineno = js_PCToLineNumber(cx, caller->script, caller->pc);
         principals = JS_EvalFramePrincipals(cx, fp, caller);
-        filename = js_ComputeFilename(cx, caller, principals, &lineno);
     } else {
         filename = NULL;
         lineno = 0;
@@ -2079,12 +2061,17 @@ JSObject *
 js_InitFunctionClass(JSContext *cx, JSObject *obj)
 {
     JSObject *proto;
+    JSAtom *atom;
     JSFunction *fun;
 
     proto = JS_InitClass(cx, obj, NULL, &js_FunctionClass, Function, 1,
                          function_props, function_methods, NULL, NULL);
     if (!proto)
         return NULL;
+    atom = js_Atomize(cx, js_FunctionClass.name, strlen(js_FunctionClass.name),
+                      0);
+    if (!atom)
+        goto bad;
     fun = js_NewFunction(cx, proto, NULL, 0, 0, obj, NULL);
     if (!fun)
         goto bad;
@@ -2256,7 +2243,7 @@ js_ValueToFunctionObject(JSContext *cx, jsval *vp, uintN flags)
 
     caller = JS_GetScriptedCaller(cx, cx->fp);
     if (caller) {
-        principals = JS_StackFramePrincipals(cx, caller);
+        principals = caller->script->principals;
     } else {
         /* No scripted caller, don't allow access. */
         principals = NULL;
@@ -2292,37 +2279,31 @@ void
 js_ReportIsNotFunction(JSContext *cx, jsval *vp, uintN flags)
 {
     JSStackFrame *fp;
-    JSString *str;
-    JSTempValueRooter tvr;
-    const char *bytes, *source;
+    uintN error;
+    const char *name, *source;
 
     for (fp = cx->fp; fp && !fp->spbase; fp = fp->down)
         continue;
-    str = js_DecompileValueGenerator(cx,
-                                     (fp && fp->spbase <= vp && vp < fp->sp)
-                                     ? vp - fp->sp
-                                     : (flags & JSV2F_SEARCH_STACK)
-                                     ? JSDVG_SEARCH_STACK
-                                     : JSDVG_IGNORE_STACK,
-                                     *vp,
-                                     NULL);
-    if (str) {
-        JS_PUSH_TEMP_ROOT_STRING(cx, str, &tvr);
-        bytes = JS_GetStringBytes(str);
-        if (flags & JSV2F_ITERATOR) {
-            source = js_ValueToPrintableSource(cx, *vp);
-            if (source) {
-                JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL,
-                                     JSMSG_BAD_ITERATOR,
-                                     bytes, js_iterator_str, source);
-            }
-        } else {
-            JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL,
-                                 (uintN)((flags & JSV2F_CONSTRUCT)
-                                         ? JSMSG_NOT_CONSTRUCTOR
-                                         : JSMSG_NOT_FUNCTION),
-                                 bytes);
-        }
-        JS_POP_TEMP_ROOT(cx, &tvr);
+    name = NULL;
+    source = NULL;
+    if (flags & JSV2F_ITERATOR) {
+        error = JSMSG_BAD_ITERATOR;
+        name = js_iterator_str;
+        source = js_ValueToPrintableSource(cx, *vp);
+        if (!source)
+            return;
+    } else if (flags & JSV2F_CONSTRUCT) {
+        error = JSMSG_NOT_CONSTRUCTOR;
+    } else {
+        error = JSMSG_NOT_FUNCTION;
     }
+
+    js_ReportValueError3(cx, error,
+                         (fp && fp->spbase <= vp && vp < fp->sp)
+                         ? vp - fp->sp
+                         : (flags & JSV2F_SEARCH_STACK)
+                         ? JSDVG_SEARCH_STACK
+                         : JSDVG_IGNORE_STACK,
+                         *vp, NULL,
+                         name, source);
 }
