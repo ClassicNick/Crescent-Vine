@@ -79,7 +79,7 @@ JS_BEGIN_EXTERN_C
 # error "mutable string type index botch!"
 #endif
 
-extern uint8 *
+extern JS_FRIEND_API(uint8 *)
 js_GetGCThingFlags(void *thing);
 
 /*
@@ -201,42 +201,42 @@ js_UnlockGCThingRT(JSRuntime *rt, void *thing);
 extern JSBool
 js_IsAboutToBeFinalized(JSContext *cx, void *thing);
 
-extern void
-js_MarkAtom(JSContext *cx, JSAtom *atom);
-
-/* We avoid a large number of unnecessary calls by doing the flag check first */
-#define GC_MARK_ATOM(cx, atom)                                                \
-    JS_BEGIN_MACRO                                                            \
-        if (!((atom)->flags & ATOM_MARK))                                     \
-            js_MarkAtom(cx, atom);                                            \
-    JS_END_MACRO
-
 /*
- * Always use GC_MARK macro and never call js_MarkGCThing directly so
- * when GC_MARK_DEBUG is defined the dump of live GC things does not miss
- * a thing.
+ * Macro to test if a traversal is the marking phase of GC to avoid exposing
+ * JSAtom and ScriptFilenameEntry to traversal implementations.
  */
-extern void
-js_MarkGCThing(JSContext *cx, void *thing);
+#define IS_GC_MARKING_TRACER(trc) ((trc)->callback == NULL)
 
-#ifdef GC_MARK_DEBUG
+JS_STATIC_ASSERT(JSTRACE_STRING == 2);
 
-# define GC_MARK(cx, thing, name) js_MarkNamedGCThing(cx, thing, name)
+#define JSTRACE_FUNCTION    3
+#define JSTRACE_ATOM        4
+#define JSTRACE_NAMESPACE   5
+#define JSTRACE_QNAME       6
+#define JSTRACE_XML         7
 
-extern void
-js_MarkNamedGCThing(JSContext *cx, void *thing, const char *name);
-
-extern JS_FRIEND_DATA(FILE *) js_DumpGCHeap;
-JS_EXTERN_DATA(void *) js_LiveThingToFind;
-
+#if JS_HAS_XML_SUPPORT
+# define JS_IS_VALID_TRACE_KIND(kind) ((uint32)(kind) <= JSTRACE_XML)
 #else
-
-# define GC_MARK(cx, thing, name) js_MarkGCThing(cx, thing)
-
+# define JS_IS_VALID_TRACE_KIND(kind) ((uint32)(kind) <= JSTRACE_ATOM)
 #endif
 
+/*
+ * Trace jsval when JSVAL_IS_OBJECT(v) can be an arbitrary GC thing casted as
+ * JSVAL_OBJECT and js_GetGCThingFlags has to be used to find the real type
+ * behind v.
+ */
 extern void
-js_MarkStackFrame(JSContext *cx, JSStackFrame *fp);
+js_CallValueTracerIfGCThing(JSTracer *trc, jsval v);
+
+extern void
+js_TraceStackFrame(JSTracer *trc, JSStackFrame *fp);
+
+extern void
+js_TraceRuntime(JSTracer *trc, JSBool allAtoms);
+
+extern JS_FRIEND_API(void)
+js_TraceContext(JSTracer *trc, JSContext *acx);
 
 /*
  * Kinds of js_GC invocation.
@@ -341,7 +341,7 @@ struct JSGCArenaList {
 #endif
 };
 
-struct JSWeakRoots {
+typedef struct JSWeakRoots {
     /* Most recently created things by type, members of the GC's root set. */
     JSGCThing           *newborn[GCX_NTYPES];
 
@@ -350,7 +350,7 @@ struct JSWeakRoots {
 
     /* Root for the result of the most recent js_InternalInvoke call. */
     jsval               lastInternalResult;
-};
+} JSWeakRoots;
 
 JS_STATIC_ASSERT(JSVAL_NULL == 0);
 #define JS_CLEAR_WEAK_ROOTS(wr) (memset((wr), 0, sizeof(JSWeakRoots)))

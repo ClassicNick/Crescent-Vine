@@ -131,6 +131,7 @@ typedef struct JSContext         JSContext;
 typedef struct JSErrorReport     JSErrorReport;
 typedef struct JSFunction        JSFunction;
 typedef struct JSFunctionSpec    JSFunctionSpec;
+typedef struct JSTracer          JSTracer;
 typedef struct JSIdArray         JSIdArray;
 typedef struct JSProperty        JSProperty;
 typedef struct JSPropertySpec    JSPropertySpec;
@@ -274,10 +275,10 @@ typedef void
  * The signature for JSClass.getObjectOps, used by JS_NewObject's internals
  * to discover the set of high-level object operations to use for new objects
  * of the given class.  All native objects have a JSClass, which is stored as
- * a private (int-tagged) pointer in obj->slots[JSSLOT_CLASS].  In contrast,
- * all native and host objects have a JSObjectMap at obj->map, which may be
- * shared among a number of objects, and which contains the JSObjectOps *ops
- * pointer used to dispatch object operations from API calls.
+ * a private (int-tagged) pointer in obj slots. In contrast, all native and
+ * host objects have a JSObjectMap at obj->map, which may be shared among a
+ * number of objects, and which contains the JSObjectOps *ops pointer used to
+ * dispatch object operations from API calls.
  *
  * Thus JSClass (which pre-dates JSObjectOps in the API) provides a low-level
  * interface to class-specific code and data, while JSObjectOps allows for a
@@ -330,25 +331,74 @@ typedef JSBool
                                     JSBool *bp);
 
 /*
- * Function type for JSClass.mark and JSObjectOps.mark, called from the GC to
- * scan live GC-things reachable from obj's private data structure.  For each
- * such thing, a mark implementation must call
- *
- *    JS_MarkGCThing(cx, thing, name, arg);
- *
- * The trailing name and arg parameters are used for GC_MARK_DEBUG-mode heap
- * dumping and ref-path tracing.  The mark function should pass a (typically
- * literal) string naming the private data member for name, and it must pass
- * the opaque arg parameter through from its caller.
- *
- * For the JSObjectOps.mark hook, the return value is the number of slots at
- * obj->slots to scan.  For JSClass.mark, the return value is ignored.
- *
- * NB: JSMarkOp implementations cannot allocate new GC-things (JS_NewObject
- * called from a mark function will fail silently, e.g.).
+ * Deprecated function type for JSClass.mark. All new code should define
+ * JSTraceOp instead to ensure the traversal of traceable things stored in
+ * the native structures.
  */
 typedef uint32
 (* JS_DLL_CALLBACK JSMarkOp)(JSContext *cx, JSObject *obj, void *arg);
+
+/*
+ * Function type for trace operation of the class called to enumerate all
+ * traceable things reachable from obj's private data structure. For each such
+ * thing, a trace implementation must call
+ *
+ *    JS_CallTracer(trc, thing, kind);
+ *
+ * or one of its convenience macros as described in jsapi.h.
+ *
+ * JSTraceOp implementation can assume that no other threads mutates object
+ * state. It must not change state of the object or corresponding native
+ * structures. The only exception for this rule is the case when the embedding
+ * needs a tight integration with GC. In that case the embedding can check if
+ * the traversal is a part of the marking phase through calling
+ * JS_IsGCMarkingTracer and apply a special code like emptying caches or
+ * marking its native structures.
+ *
+ * To define the tracer for a JSClass, the implementation must add
+ * JSCLASS_MARK_IS_TRACE to class flags and use JS_CLASS_TRACE(method)
+ * macro below to convert JSTraceOp to JSMarkOp when initializing or
+ * assigning JSClass.mark field.
+ */
+typedef void
+(* JS_DLL_CALLBACK JSTraceOp)(JSTracer *trc, JSObject *obj);
+
+#if defined __GNUC__ && __GNUC__ >= 4 && !defined __cplusplus
+# define JS_CLASS_TRACE(method)                                               \
+    (__builtin_types_compatible_p(JSTraceOp, __typeof(&(method)))             \
+     ? (JSMarkOp)(method)                                                     \
+     : js_WrongTypeForClassTracer)
+
+extern JSMarkOp js_WrongTypeForClassTracer;
+
+#else
+# define JS_CLASS_TRACE(method) ((JSMarkOp)(method))
+#endif
+
+/*
+ * Tracer callback, called for each traceable thing directly refrenced by a
+ * particular object or runtime structure. It is the callback responsibility
+ * to ensure the traversal of the full object graph via calling eventually
+ * JS_TraceChildren on the passed thing. In this case the callback must be
+ * prepared to deal with cycles in the traversal graph.
+ *
+ * kind argument is one of JSTRACE_OBJECT, JSTRACE_DOUBLE, JSTRACE_STRING or
+ * a tag denoting internal implementation-specific traversal kind. In the
+ * latter case the only operations on thing that the callback can do is to call
+ * JS_TraceChildren or DEBUG-only JS_PrintTraceThingInfo.
+ */
+typedef void
+(* JS_DLL_CALLBACK JSTraceCallback)(JSTracer *trc, void *thing, uint32 kind);
+
+/*
+ * DEBUG only callback that JSTraceOp implementation can provide to return
+ * a string describing the reference traced with JS_CallTracer.
+ */
+#ifdef DEBUG
+typedef void
+(* JS_DLL_CALLBACK JSTraceNamePrinter)(JSTracer *trc, char *buf,
+                                       size_t bufsize);
+#endif
 
 /*
  * The optional JSClass.reserveSlots hook allows a class to make computed
@@ -497,7 +547,7 @@ typedef JSBool
  * (js_ObjectOps, see jsobj.c) access slots reserved by including a call to
  * the JSCLASS_HAS_RESERVED_SLOTS(n) macro in the JSClass.flags initializer.
  *
- * NB: the slot parameter is a zero-based index into obj->slots[], unlike the
+ * NB: the slot parameter is a zero-based index into obj slots, unlike the
  * index parameter to the JS_GetReservedSlot and JS_SetReservedSlot API entry
  * points, which is a zero-based index into the JSCLASS_RESERVED_SLOTS(clasp)
  * reserved slots that come after the initial well-known slots: proto, parent,
@@ -547,7 +597,7 @@ typedef enum JSContextOp {
 
 /*
  * The possible values for contextOp when the runtime calls the callback are:
- *   JSCONTEXT_NEW      JS_NewContext succesfully created a new JSContext
+ *   JSCONTEXT_NEW      JS_NewContext successfully created a new JSContext
  *                      instance. The callback can initialize the instance as
  *                      required. If the callback returns false, the instance
  *                      will be destroyed and JS_NewContext returns null. In
@@ -570,6 +620,16 @@ typedef enum JSGCStatus {
 
 typedef JSBool
 (* JS_DLL_CALLBACK JSGCCallback)(JSContext *cx, JSGCStatus status);
+
+typedef void
+(* JS_DLL_CALLBACK JSGCThingCallback)(void *thing, uint8 flags, void *closure);
+
+/*
+ * Generic trace operation that calls JS_CallTracer on each traceable thing
+ * stored in data.
+ */
+typedef void
+(* JS_DLL_CALLBACK JSTraceDataOp)(JSTracer *trc, void *data);
 
 typedef JSBool
 (* JS_DLL_CALLBACK JSBranchCallback)(JSContext *cx, JSScript *script);

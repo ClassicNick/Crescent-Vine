@@ -1,5 +1,5 @@
 /* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set sw=4 ts=8 et tw=80:
+ * vim: set sw=4 ts=8 et tw=78:
  *
  * ***** BEGIN LICENSE BLOCK *****
  * Version: MPL 1.1/GPL 2.0/LGPL 2.1
@@ -332,7 +332,6 @@ SetOrDeleteArrayElement(JSContext *cx, JSObject *obj, jsuint index,
     }
 }
 
-
 JSBool
 js_SetLengthProperty(JSContext *cx, JSObject *obj, jsuint length)
 {
@@ -407,8 +406,10 @@ array_length_setter(JSContext *cx, JSObject *obj, jsval id, jsval *vp)
         if (oldlen - newlen < (1 << 24)) {
             do {
                 --oldlen;
-                if (!DeleteArrayElement(cx, obj, oldlen))
+                if (!JS_CHECK_OPERATION_LIMIT(cx, JSOW_JUMP) ||
+                    !DeleteArrayElement(cx, obj, oldlen)) {
                     return JS_FALSE;
+                }
             } while (oldlen != newlen);
         } else {
             /*
@@ -426,7 +427,8 @@ array_length_setter(JSContext *cx, JSObject *obj, jsval id, jsval *vp)
             JS_PUSH_TEMP_ROOT_OBJECT(cx, iter, &tvr);
             gap = oldlen - newlen;
             for (;;) {
-                ok = JS_NextProperty(cx, iter, &id2);
+                ok = (JS_CHECK_OPERATION_LIMIT(cx, JSOW_JUMP) &&
+                      JS_NextProperty(cx, iter, &id2));
                 if (!ok)
                     break;
                 if (id2 == JSVAL_VOID)
@@ -517,19 +519,19 @@ array_join_sub(JSContext *cx, JSObject *obj, enum ArrayToStringOp op,
     growth = (size_t) -1;
 #endif
 
-    if (IS_SHARP(he)) {
-#if JS_HAS_SHARP_VARS
-        nchars = js_strlen(chars);
-#else
-        chars[0] = '[';
-        chars[1] = ']';
-        chars[2] = 0;
-        nchars = 2;
-#endif
-        goto make_string;
-    }
-
     if (op == TO_SOURCE) {
+        if (IS_SHARP(he)) {
+#if JS_HAS_SHARP_VARS
+            nchars = js_strlen(chars);
+#else
+            chars[0] = '[';
+            chars[1] = ']';
+            chars[2] = 0;
+            nchars = 2;
+#endif
+            goto make_string;
+        }
+
         /*
          * Always allocate 2 extra chars for closing ']' and terminating 0
          * and then preallocate 1 + extratail to include starting '['.
@@ -591,7 +593,8 @@ array_join_sub(JSContext *cx, JSObject *obj, enum ArrayToStringOp op,
 #define v (*rval)
 
     for (index = 0; index < length; index++) {
-        ok = GetArrayElement(cx, obj, index, &hole, &v);
+        ok = (JS_CHECK_OPERATION_LIMIT(cx, JSOW_JUMP) &&
+              GetArrayElement(cx, obj, index, &hole, &v));
         if (!ok)
             goto done;
         if (hole ||
@@ -638,6 +641,7 @@ array_join_sub(JSContext *cx, JSObject *obj, enum ArrayToStringOp op,
             goto done;
         }
         growth *= sizeof(jschar);
+        JS_COUNT_OPERATION(cx, JSOW_ALLOCATION);
         if (!chars) {
             chars = (jschar *) malloc(growth);
             if (!chars)
@@ -730,8 +734,10 @@ InitArrayElements(JSContext *cx, JSObject *obj, jsuint start, jsuint end,
                   jsval *vector)
 {
     while (start != end) {
-        if (!SetArrayElement(cx, obj, start++, *vector++))
+        if (!JS_CHECK_OPERATION_LIMIT(cx, JSOW_JUMP) ||
+            !SetArrayElement(cx, obj, start++, *vector++)) {
             return JS_FALSE;
+        }
     }
     return JS_TRUE;
 }
@@ -794,7 +800,8 @@ array_reverse(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
     tmproot2 = argv + argc + 1;
     half = len / 2;
     for (i = 0; i < half; i++) {
-        if (!GetArrayElement(cx, obj, i, &hole, tmproot) ||
+        if (!JS_CHECK_OPERATION_LIMIT(cx, JSOW_JUMP) ||
+            !GetArrayElement(cx, obj, i, &hole, tmproot) ||
             !GetArrayElement(cx, obj, len - i - 1, &hole2, tmproot2) ||
             !SetOrDeleteArrayElement(cx, obj, len - i - 1, hole, *tmproot) ||
             !SetOrDeleteArrayElement(cx, obj, i, hole2, *tmproot2)) {
@@ -805,14 +812,12 @@ array_reverse(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
     return JS_TRUE;
 }
 
-typedef struct HSortArgs {
-    void         *vec;
+typedef struct MSortArgs {
     size_t       elsize;
-    void         *pivot;
     JSComparator cmp;
     void         *arg;
     JSBool       fastcopy;
-} HSortArgs;
+} MSortArgs;
 
 static JSBool
 sort_compare(void *arg, const void *a, const void *b, int *result);
@@ -820,111 +825,142 @@ sort_compare(void *arg, const void *a, const void *b, int *result);
 static int
 sort_compare_strings(void *arg, const void *a, const void *b, int *result);
 
+/* Helper function for js_MergeSort. */
 static JSBool
-HeapSortHelper(JSBool building, HSortArgs *hsa, size_t lo, size_t hi)
+MergeArrays(MSortArgs *msa, void *src, void *dest, size_t run1, size_t run2)
 {
-    void *pivot, *vec, *vec2, *arg, *a, *b;
-    size_t elsize;
+    void *arg, *a, *b, *c;
+    size_t elsize, runtotal;
+    int cmp_result;
     JSComparator cmp;
     JSBool fastcopy;
-    size_t j, hiDiv2;
-    int cmp_result;
 
-    pivot = hsa->pivot;
-    vec = hsa->vec;
-    elsize = hsa->elsize;
-    vec2 =  (char *)vec - 2 * elsize;
-    cmp = hsa->cmp;
-    arg = hsa->arg;
+    runtotal = run1 + run2;
 
-    fastcopy = hsa->fastcopy;
-#define MEMCPY(p,q,n) \
-    (fastcopy ? (void)(*(jsval*)(p) = *(jsval*)(q)) : (void)memcpy(p, q, n))
+    elsize = msa->elsize;
+    cmp = msa->cmp;
+    arg = msa->arg;
+    fastcopy = msa->fastcopy;
+
 #define CALL_CMP(a, b) \
     if (!cmp(arg, (a), (b), &cmp_result)) return JS_FALSE;
 
-    if (lo == 1) {
-        j = 2;
-        b = (char *)vec + elsize;
-        if (j < hi) {
-            CALL_CMP(vec, b);
-            if (cmp_result < 0)
-                j++;
-        }
-        a = (char *)vec + (hi - 1) * elsize;
-        b = (char *)vec2 + j * elsize;
-
-        /*
-         * During sorting phase b points to a member of heap that cannot be
-         * bigger then biggest of vec[0] and vec[1], and cmp(a, b, arg) <= 0
-         * always holds.
-         */
-        if (building || hi == 2) {
-            CALL_CMP(a, b);
-            if (cmp_result >= 0)
-                return JS_TRUE;
-        }
-
-        MEMCPY(pivot, a, elsize);
-        MEMCPY(a, b, elsize);
-        lo = j;
-    } else {
-        a = (char *)vec2 + lo * elsize;
-        MEMCPY(pivot, a, elsize);
+    /* Copy runs already in sorted order. */
+    b = (char *)src + run1 * elsize;
+    a = (char *)b - elsize;
+    CALL_CMP(a, b);
+    if (cmp_result <= 0) {
+        memcpy(dest, src, runtotal * elsize);
+        return JS_TRUE;
     }
 
-    hiDiv2 = hi/2;
-    while (lo <= hiDiv2) {
-        j = lo + lo;
-        a = (char *)vec2 + j * elsize;
-        b = (char *)vec + (j - 1) * elsize;
-        if (j < hi) {
-            CALL_CMP(a, b);
-            if (cmp_result < 0)
-                j++;
+#define COPY_ONE(p,q,n) \
+    (fastcopy ? (void)(*(jsval*)(p) = *(jsval*)(q)) : (void)memcpy(p, q, n))
+
+    a = src;
+    c = dest;
+    for (; runtotal != 0; runtotal--) {
+        JSBool from_a = run2 == 0;
+        if (!from_a && run1 != 0) {
+            CALL_CMP(a,b);
+            from_a = cmp_result <= 0;
         }
-        b = (char *)vec2 + j * elsize;
-        CALL_CMP(pivot, b);
-        if (cmp_result >= 0)
-            break;
 
-        a = (char *)vec2 + lo * elsize;
-        MEMCPY(a, b, elsize);
-        lo = j;
+        if (from_a) {
+            COPY_ONE(c, a, elsize);
+            run1--;
+            a = (char *)a + elsize;
+        } else {
+            COPY_ONE(c, b, elsize);
+            run2--;
+            b = (char *)b + elsize;
+        }
+        c = (char *)c + elsize;
     }
-
-    a = (char *)vec2 + lo * elsize;
-    MEMCPY(a, pivot, elsize);
+#undef COPY_ONE
+#undef CALL_CMP
 
     return JS_TRUE;
-
-#undef CALL_CMP
-#undef MEMCPY
-
 }
 
+/*
+ * This sort is stable, i.e. sequence of equal elements is preserved.
+ * See also bug #224128.
+ */
 JSBool
-js_HeapSort(void *vec, size_t nel, void *pivot, size_t elsize,
-            JSComparator cmp, void *arg)
+js_MergeSort(void *src, size_t nel, size_t elsize,
+             JSComparator cmp, void *arg, void *tmp)
 {
-    HSortArgs hsa;
-    size_t i;
+    void *swap, *vec1, *vec2;
+    MSortArgs msa;
+    size_t i, j, lo, hi, run;
+    JSBool fastcopy;
+    int cmp_result;
 
-    hsa.vec = vec;
-    hsa.elsize = elsize;
-    hsa.pivot = pivot;
-    hsa.cmp = cmp;
-    hsa.arg = arg;
-    hsa.fastcopy = (cmp == sort_compare || cmp == sort_compare_strings);
+    fastcopy = (cmp == sort_compare || cmp == sort_compare_strings);
+#define COPY_ONE(p,q,n) \
+    (fastcopy ? (void)(*(jsval*)(p) = *(jsval*)(q)) : (void)memcpy(p, q, n))
+#define CALL_CMP(a, b) \
+    if (!cmp(arg, (a), (b), &cmp_result)) return JS_FALSE;
+#define INS_SORT_INT 4
 
-    for (i = nel/2; i != 0; i--) {
-        if (!HeapSortHelper(JS_TRUE, &hsa, i, nel))
-            return JS_FALSE;
+    /*
+     * Apply insertion sort to small chunks to reduce the number of merge
+     * passes needed.
+     */
+    for (lo = 0; lo < nel; lo += INS_SORT_INT) {
+        hi = lo + INS_SORT_INT;
+        if (hi >= nel)
+            hi = nel;
+        for (i = lo + 1; i < hi; i++) {
+            vec1 = (char *)src + i * elsize;
+            vec2 = (char *)vec1 - elsize;
+            for (j = i; j > lo; j--) {
+                CALL_CMP(vec2, vec1);
+                /* "<=" instead of "<" insures the sort is stable */
+                if (cmp_result <= 0) {
+                    break;
+                }
+
+                /* Swap elements, using "tmp" as tmp storage */
+                COPY_ONE(tmp, vec2, elsize);
+                COPY_ONE(vec2, vec1, elsize);
+                COPY_ONE(vec1, tmp, elsize);
+                vec1 = vec2;
+                vec2 = (char *)vec1 - elsize;
+            }
+        }
     }
-    while (nel > 2) {
-        if (!HeapSortHelper(JS_FALSE, &hsa, 1, --nel))
-            return JS_FALSE;
+#undef CALL_CMP
+#undef COPY_ONE
+
+    msa.elsize = elsize;
+    msa.cmp = cmp;
+    msa.arg = arg;
+    msa.fastcopy = fastcopy;
+
+    vec1 = src;
+    vec2 = tmp;
+    for (run = INS_SORT_INT; run < nel; run *= 2) {
+        for (lo = 0; lo < nel; lo += 2 * run) {
+            hi = lo + run;
+            if (hi >= nel) {
+                memcpy((char *)vec2 + lo * elsize, (char *)vec1 + lo * elsize,
+                       (nel - lo) * elsize);
+                break;
+            }
+            if (!MergeArrays(&msa, (char *)vec1 + lo * elsize,
+                             (char *)vec2 + lo * elsize, run,
+                             hi + run > nel ? nel - hi : run)) {
+                return JS_FALSE;
+            }
+        }
+        swap = vec1;
+        vec1 = vec2;
+        vec2 = swap;
     }
+    if (src != vec1)
+        memcpy(src, tmp, nel * elsize);
 
     return JS_TRUE;
 }
@@ -950,6 +986,9 @@ sort_compare(void *arg, const void *a, const void *b, int *result)
      */
     JS_ASSERT(av != JSVAL_VOID);
     JS_ASSERT(bv != JSVAL_VOID);
+
+    if (!JS_CHECK_OPERATION_LIMIT(cx, JSOW_JUMP))
+        return JS_FALSE;
 
     *result = 0;
     ok = JS_TRUE;
@@ -1007,14 +1046,24 @@ sort_compare_strings(void *arg, const void *a, const void *b, int *result)
 {
     jsval av = *(const jsval *)a, bv = *(const jsval *)b;
 
+    if (!JS_CHECK_OPERATION_LIMIT((JSContext *)arg, JSOW_JUMP))
+        return JS_FALSE;
+
     *result = (int) js_CompareStrings(JSVAL_TO_STRING(av), JSVAL_TO_STRING(bv));
     return JS_TRUE;
 }
 
+/*
+ * The array_sort function below assumes JSVAL_NULL is zero in order to
+ * perform initialization using memset.  Other parts of SpiderMonkey likewise
+ * "know" that JSVAL_NULL is zero; this static assertion covers all cases.
+ */
+JS_STATIC_ASSERT(JSVAL_NULL == 0);
+
 static JSBool
 array_sort(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
 {
-    jsval fval, *vec, *pivotroot;
+    jsval fval, *vec, *mergesort_tmp;
     CompareArgs ca;
     jsuint len, newlen, i, undefs;
     JSTempValueRooter tvr;
@@ -1047,16 +1096,20 @@ array_sort(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
     }
 
     /*
-     * We need a temporary array of len jsvals to hold elements of the array.
+     * We need a temporary array of 2 * len jsvals to hold the array elements.
      * Check that its size does not overflow size_t, which would allow for
      * indexing beyond the end of the malloc'd vector.
      */
-    if (len > ((size_t) -1) / sizeof(jsval)) {
+    if (len > (size_t)-1 / (2 * sizeof(jsval))) {
         JS_ReportOutOfMemory(cx);
         return JS_FALSE;
     }
 
-    vec = (jsval *) JS_malloc(cx, ((size_t) len) * sizeof(jsval));
+    /*
+     * Allocate 2 * len instead of len, to reserve space for the mergesort
+     * algorithm.
+     */
+    vec = (jsval *) JS_malloc(cx, 2 * (size_t)len * sizeof(jsval));
     if (!vec)
         return JS_FALSE;
 
@@ -1084,6 +1137,10 @@ array_sort(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
     undefs = 0;
     newlen = 0;
     for (i = 0; i < len; i++) {
+        ok = JS_CHECK_OPERATION_LIMIT(cx, JSOW_JUMP);
+        if (!ok)
+            goto out;
+
         /* Clear vec[newlen] before including it in the rooted set. */
         vec[newlen] = JSVAL_NULL;
         tvr.count = newlen + 1;
@@ -1105,14 +1162,32 @@ array_sort(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
         ++newlen;
     }
 
-    /* Here len == newlen + undefs + number_of_holes. */
-    ca.context = cx;
-    ca.fval = fval;
-    ca.localroot = argv + argc;       /* local GC root for temporary string */
-    pivotroot    = argv + argc + 1;   /* local GC root for pivot val */
-    ok = js_HeapSort(vec, (size_t) newlen, pivotroot, sizeof(jsval),
-                     all_strings ? sort_compare_strings : sort_compare,
-                     &ca);
+    /*
+     * The first newlen elements of vec are copied from the array
+     * object (above).
+     *
+     * Of the remaining 2*len-newlen positions, newlen are used as GC
+     * rooted temp space for mergesort, and the last (2*len-2*newlen)
+     * positions are unused.
+     *
+     * Here we clear the tmp-values before GC-rooting the array.
+     * We assume JSVAL_NULL==0 to optimize initialization using memset.
+     */
+    mergesort_tmp = vec + newlen;
+    memset(mergesort_tmp, 0, newlen * sizeof(jsval));
+    tvr.count = newlen * 2;
+
+    /* Here len == 2 * (newlen + undefs + number_of_holes). */
+    if (all_strings) {
+        ok = js_MergeSort(vec, (size_t) newlen, sizeof(jsval),
+                          sort_compare_strings, cx, mergesort_tmp);
+    } else {
+        ca.context = cx;
+        ca.fval = fval;
+        ca.localroot = argv + argc; /* local GC root for temporary string */
+        ok = js_MergeSort(vec, (size_t) newlen, sizeof(jsval),
+                          sort_compare, &ca, mergesort_tmp);
+    }
     if (!ok)
         goto out;
 
@@ -1129,14 +1204,18 @@ array_sort(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
     /* Set undefs that sorted after the rest of elements. */
     while (undefs != 0) {
         --undefs;
-        if (!SetArrayElement(cx, obj, newlen++, JSVAL_VOID))
+        if (!JS_CHECK_OPERATION_LIMIT(cx, JSOW_JUMP) ||
+            !SetArrayElement(cx, obj, newlen++, JSVAL_VOID)) {
             return JS_FALSE;
+        }
     }
 
     /* Re-create any holes that sorted to the end of the array. */
     while (len > newlen) {
-        if (!DeleteArrayElement(cx, obj, --len))
+        if (!JS_CHECK_OPERATION_LIMIT(cx, JSOW_JUMP) ||
+            !DeleteArrayElement(cx, obj, --len)) {
             return JS_FALSE;
+        }
     }
     *rval = OBJECT_TO_JSVAL(obj);
     return JS_TRUE;
@@ -1203,10 +1282,11 @@ array_shift(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
          * Slide down the array above the first element.
          */
         for (i = 0; i != length; i++) {
-            if (!GetArrayElement(cx, obj, i + 1, &hole, &argv[0]))
+            if (!JS_CHECK_OPERATION_LIMIT(cx, JSOW_JUMP) ||
+                !GetArrayElement(cx, obj, i + 1, &hole, &argv[0]) ||
+                !SetOrDeleteArrayElement(cx, obj, i, hole, argv[0])) {
                 return JS_FALSE;
-            if (!SetOrDeleteArrayElement(cx, obj, i, hole, argv[0]))
-                return JS_FALSE;
+            }
         }
 
         /* Delete the only or last element when it exist. */
@@ -1233,7 +1313,8 @@ array_unshift(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
             vp = argv + argc;   /* local root */
             do {
                 --last;
-                if (!GetArrayElement(cx, obj, last, &hole, vp) ||
+                if (!JS_CHECK_OPERATION_LIMIT(cx, JSOW_JUMP) ||
+                    !GetArrayElement(cx, obj, last, &hole, vp) ||
                     !SetOrDeleteArrayElement(cx, obj, last + argc, hole, *vp)) {
                     return JS_FALSE;
                 }
@@ -1321,8 +1402,10 @@ array_splice(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
     /* If there are elements to remove, put them into the return value. */
     if (count > 0) {
         for (last = begin; last < end; last++) {
-            if (!GetArrayElement(cx, obj, last, &hole, vp))
+            if (!JS_CHECK_OPERATION_LIMIT(cx, JSOW_JUMP) ||
+                !GetArrayElement(cx, obj, last, &hole, vp)) {
                 return JS_FALSE;
+            }
 
             /* Copy *vp to new array unless it's a hole. */
             if (!hole && !SetArrayElement(cx, obj2, last - begin, *vp))
@@ -1339,7 +1422,8 @@ array_splice(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
         last = length;
         /* (uint) end could be 0, so can't use vanilla >= test */
         while (last-- > end) {
-            if (!GetArrayElement(cx, obj, last, &hole, vp) ||
+            if (!JS_CHECK_OPERATION_LIMIT(cx, JSOW_JUMP) ||
+                !GetArrayElement(cx, obj, last, &hole, vp) ||
                 !SetOrDeleteArrayElement(cx, obj, last + delta, hole, *vp)) {
                 return JS_FALSE;
             }
@@ -1348,7 +1432,8 @@ array_splice(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
     } else if (argc < count) {
         delta = count - (jsuint)argc;
         for (last = end; last < length; last++) {
-            if (!GetArrayElement(cx, obj, last, &hole, vp) ||
+            if (!JS_CHECK_OPERATION_LIMIT(cx, JSOW_JUMP) ||
+                !GetArrayElement(cx, obj, last, &hole, vp) ||
                 !SetOrDeleteArrayElement(cx, obj, last - delta, hole, *vp)) {
                 return JS_FALSE;
             }
@@ -1392,6 +1477,8 @@ array_concat(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
     /* Loop over [0, argc] to concat args into nobj, expanding all Arrays. */
     length = 0;
     for (i = 0; i <= argc; i++) {
+        if (!JS_CHECK_OPERATION_LIMIT(cx, JSOW_JUMP))
+            return JS_FALSE;
         v = argv[i];
         if (JSVAL_IS_OBJECT(v)) {
             aobj = JSVAL_TO_OBJECT(v);
@@ -1405,8 +1492,10 @@ array_concat(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
                 if (!ValueIsLength(cx, *vp, &alength))
                     return JS_FALSE;
                 for (slot = 0; slot < alength; slot++) {
-                    if (!GetArrayElement(cx, aobj, slot, &hole, vp))
+                    if (!JS_CHECK_OPERATION_LIMIT(cx, JSOW_JUMP) ||
+                        !GetArrayElement(cx, aobj, slot, &hole, vp)) {
                         return JS_FALSE;
+                    }
 
                     /*
                      * Per ECMA 262, 15.4.4.4, step 9, ignore non-existent
@@ -1483,8 +1572,10 @@ array_slice(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
         begin = end;
 
     for (slot = begin; slot < end; slot++) {
-        if (!GetArrayElement(cx, obj, slot, &hole, vp))
+        if (!JS_CHECK_OPERATION_LIMIT(cx, JSOW_JUMP) ||
+            !GetArrayElement(cx, obj, slot, &hole, vp)) {
             return JS_FALSE;
+        }
         if (!hole && !SetArrayElement(cx, nobj, slot - begin, *vp))
             return JS_FALSE;
     }
@@ -1541,8 +1632,10 @@ array_indexOfHelper(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
     }
 
     for (;;) {
-        if (!GetArrayElement(cx, obj, (jsuint)i, &hole, rval))
+        if (!JS_CHECK_OPERATION_LIMIT(cx, JSOW_JUMP) ||
+            !GetArrayElement(cx, obj, (jsuint)i, &hole, rval)) {
             return JS_FALSE;
+        }
         if (!hole && js_StrictlyEqual(*rval, argv[0]))
             return js_NewNumberValue(cx, i, rval);
         if (i == stop)
@@ -1569,11 +1662,11 @@ array_lastIndexOf(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
     return array_indexOfHelper(cx, obj, argc, argv, rval, JS_TRUE);
 }
 
-/* Order is important; extras that use a caller's predicate must follow MAP. */
+/* Order is important; extras that take a predicate funarg must follow MAP. */
 typedef enum ArrayExtraMode {
     FOREACH,
-	REDUCE,
-	REDUCE_RIGHT,
+    REDUCE,
+    REDUCE_RIGHT,
     MAP,
     FILTER,
     SOME,
@@ -1589,7 +1682,7 @@ array_extra(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval,
     jsval *vp, *sp, *origsp, *oldsp;
     jsuint length, newlen;
     JSObject *callable, *thisp, *newarr;
-	jsint start, end, step, i;
+    jsint start, end, step, i;
     void *mark;
     JSStackFrame *fp;
     JSBool ok, cond, hole;
@@ -1617,9 +1710,9 @@ array_extra(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval,
     newarr = NULL;
     ok = JS_TRUE;
 #endif
-	start = 0, end = length, step = 1;
+    start = 0, end = length, step = 1;
     switch (mode) {
-	case REDUCE_RIGHT:
+      case REDUCE_RIGHT:
         start = length - 1, end = -1, step = -1;
         /* FALL THROUGH */
       case REDUCE:
@@ -1679,7 +1772,8 @@ array_extra(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval,
     oldsp = fp->sp;
 
     for (i = start; i != end; i += step) {
-        ok = GetArrayElement(cx, obj, i, &hole, vp);
+        ok = (JS_CHECK_OPERATION_LIMIT(cx, JSOW_JUMP) &&
+              GetArrayElement(cx, obj, i, &hole, vp));
         if (!ok)
             break;
         if (hole)
@@ -1693,7 +1787,7 @@ array_extra(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval,
         sp = origsp;
         *sp++ = OBJECT_TO_JSVAL(callable);
         *sp++ = OBJECT_TO_JSVAL(thisp);
-		if (REDUCE_MODE(mode))
+        if (REDUCE_MODE(mode))
             *sp++ = *rval;
         *sp++ = *vp;
         *sp++ = INT_TO_JSVAL(i);
@@ -1722,7 +1816,7 @@ array_extra(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval,
         switch (mode) {
           case FOREACH:
             break;
-		  case REDUCE:
+          case REDUCE:
           case REDUCE_RIGHT:
             *rval = vp[1];
             break;
@@ -1821,7 +1915,7 @@ static JSFunctionSpec array_methods[] = {
     /* Perl-ish methods. */
     {"join",                array_join,             1,JSFUN_GENERIC_NATIVE,0},
     {"reverse",             array_reverse,          0,JSFUN_GENERIC_NATIVE,2},
-    {"sort",                array_sort,             1,JSFUN_GENERIC_NATIVE,2},
+    {"sort",                array_sort,             1,JSFUN_GENERIC_NATIVE,1},
     {"push",                array_push,             1,JSFUN_GENERIC_NATIVE,0},
     {"pop",                 array_pop,              0,JSFUN_GENERIC_NATIVE,0},
     {"shift",               array_shift,            0,JSFUN_GENERIC_NATIVE,1},
@@ -1837,7 +1931,7 @@ static JSFunctionSpec array_methods[] = {
     {"lastIndexOf",         array_lastIndexOf,      1,JSFUN_GENERIC_NATIVE,0},
     {"forEach",             array_forEach,          1,JSFUN_GENERIC_NATIVE,2},
     {"map",                 array_map,              1,JSFUN_GENERIC_NATIVE,2},
-	{"reduce",              array_reduce,           1,JSFUN_GENERIC_NATIVE,2},
+    {"reduce",              array_reduce,           1,JSFUN_GENERIC_NATIVE,2},
     {"reduceRight",         array_reduceRight,      1,JSFUN_GENERIC_NATIVE,2},
     {"filter",              array_filter,           1,JSFUN_GENERIC_NATIVE,2},
     {"some",                array_some,             1,JSFUN_GENERIC_NATIVE,2},

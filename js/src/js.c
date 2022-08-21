@@ -285,7 +285,7 @@ static int
 usage(void)
 {
     fprintf(gErrFile, "%s\n", JS_GetImplementationVersion());
-    fprintf(gErrFile, "usage: js [-PswWxCi] [-b branchlimit] [-c stackchunksize] [-v version] [-f scriptfile] [-e script] [-S maxstacksize] [scriptfile] [scriptarg...]\n");
+    fprintf(gErrFile, "usage: js [-PswWxCi] [-b branchlimit] [-c stackchunksize] [-o option] [-v version] [-f scriptfile] [-e script] [-S maxstacksize] [scriptfile] [scriptarg...]\n");
     return 2;
 }
 
@@ -312,6 +312,19 @@ my_BranchCallback(JSContext *cx, JSScript *script)
         JS_MaybeGC(cx);
     return JS_TRUE;
 }
+
+static struct {
+    const char  *name;
+    uint32      flag;
+} js_options[] = {
+    {"strict",          JSOPTION_STRICT},
+    {"werror",          JSOPTION_WERROR},
+    {"atline",          JSOPTION_ATLINE},
+    {"xml",             JSOPTION_XML},
+    {"relimit",         JSOPTION_RELIMIT},
+    {"anonfunfix",      JSOPTION_ANONFUNFIX},
+    {NULL,              0}
+};
 
 extern JSClass global_class;
 
@@ -398,8 +411,24 @@ ProcessArgs(JSContext *cx, JSObject *obj, char **argv, int argc)
             JS_ToggleOptions(cx, JSOPTION_STRICT);
             break;
 
+        case 'E':
+            JS_ToggleOptions(cx, JSOPTION_RELIMIT);
+            break;
+
         case 'x':
             JS_ToggleOptions(cx, JSOPTION_XML);
+            break;
+
+        case 'o':
+            if (++i == argc)
+                return usage();
+
+            for (j = 0; js_options[j].name; ++j) {
+                if (strcmp(js_options[j].name, argv[i]) == 0) {
+                    JS_ToggleOptions(cx, js_options[j].flag);
+                    break;
+                }
+            }
             break;
 
         case 'P':
@@ -500,17 +529,6 @@ Version(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
         *rval = INT_TO_JSVAL(JS_GetVersion(cx));
     return JS_TRUE;
 }
-
-static struct {
-    const char  *name;
-    uint32      flag;
-} js_options[] = {
-    {"strict",          JSOPTION_STRICT},
-    {"werror",          JSOPTION_WERROR},
-    {"atline",          JSOPTION_ATLINE},
-    {"xml",             JSOPTION_XML},
-    {0,                 0}
-};
 
 static JSBool
 Options(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
@@ -647,7 +665,7 @@ ReadLine(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
 
     /* Treat the empty string specially. */
     if (buflength == 0) {
-        *rval = JS_GetEmptyStringValue(cx);
+        *rval = feof(from) ? JSVAL_NULL : JS_GetEmptyStringValue(cx);
         JS_free(cx, buf);
         return JS_TRUE;
     }
@@ -690,9 +708,6 @@ Print(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
     n++;
     if (n)
         fputc('\n', gOutFile);
-    
-    fflush(gOutFile);
-    
     return JS_TRUE;
 }
 
@@ -720,25 +735,8 @@ GC(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
 
     rt = cx->runtime;
     preBytes = rt->gcBytes;
-#ifdef GC_MARK_DEBUG
-    if (argc && JSVAL_IS_STRING(argv[0])) {
-        char *name = JS_GetStringBytes(JSVAL_TO_STRING(argv[0]));
-        FILE *file = fopen(name, "w");
-        if (!file) {
-            fprintf(gErrFile, "gc: can't open %s: %s\n", strerror(errno));
-            return JS_FALSE;
-        }
-        js_DumpGCHeap = file;
-    } else {
-        js_DumpGCHeap = stdout;
-    }
-#endif
     JS_GC(cx);
-#ifdef GC_MARK_DEBUG
-    if (js_DumpGCHeap != stdout)
-        fclose(js_DumpGCHeap);
-    js_DumpGCHeap = NULL;
-#endif
+
     fprintf(gOutFile, "before %lu, after %lu, break %08lx\n",
             (unsigned long)preBytes, (unsigned long)rt->gcBytes,
 #ifdef XP_UNIX
@@ -909,8 +907,8 @@ PCToLine(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
 #ifdef DEBUG
 
 static void
-GetSwitchTableBounds(JSScript *script, uintN offset,
-                     uintN *start, uintN *end)
+UpdateSwitchTableBounds(JSScript *script, uintN offset,
+                        uintN *start, uintN *end)
 {
     jsbytecode *pc;
     JSOp op;
@@ -937,27 +935,25 @@ GetSwitchTableBounds(JSScript *script, uintN offset,
       case JSOP_LOOKUPSWITCHX:
         jmplen = JUMPX_OFFSET_LEN;
         goto lookup_table;
-      default:
-        JS_ASSERT(op == JSOP_LOOKUPSWITCH);
+      case JSOP_LOOKUPSWITCH:
         jmplen = JUMP_OFFSET_LEN;
       lookup_table:
         pc += jmplen;
         n = GET_ATOM_INDEX(pc);
         pc += ATOM_INDEX_LEN;
-        jmplen += ATOM_INDEX_LEN;
+        jmplen += JUMP_OFFSET_LEN;
         break;
+
+      default:
+        /* [condswitch] switch does not have any jump or lookup tables. */
+        JS_ASSERT(op == JSOP_CONDSWITCH);
+        return;
     }
 
     *start = (uintN)(pc - script->code);
     *end = *start + (uintN)(n * jmplen);
 }
 
-
-/*
- * SrcNotes assumes that SRC_METHODBASE should be distinguished from SRC_LABEL
- * using the bytecode the source note points to.
- */
-JS_STATIC_ASSERT(SRC_LABEL == SRC_METHODBASE);
 
 static void
 SrcNotes(JSContext *cx, JSScript *script)
@@ -966,7 +962,6 @@ SrcNotes(JSContext *cx, JSScript *script)
     jssrcnote *notes, *sn;
     JSSrcNoteType type;
     const char *name;
-    JSOp op;
     jsatomid atomIndex;
     JSAtom *atom;
 
@@ -980,18 +975,11 @@ SrcNotes(JSContext *cx, JSScript *script)
         type = (JSSrcNoteType) SN_TYPE(sn);
         name = js_SrcNoteSpec[type].name;
         if (type == SRC_LABEL) {
-            /* Heavily overloaded case. */
+            /* Check if the source note is for a switch case. */
             if (switchTableStart <= offset && offset < switchTableEnd) {
                 name = "case";
             } else {
-                op = script->code[offset];
-                if (op == JSOP_GETMETHOD || op == JSOP_SETMETHOD) {
-                    /* This is SRC_METHODBASE which we print as SRC_PCBASE. */
-                    type = SRC_PCBASE;
-                    name = "methodbase";
-                } else {
-                    JS_ASSERT(op == JSOP_NOP);
-                }
+                JS_ASSERT(script->code[offset] == JSOP_NOP);
             }
         }
         fprintf(gOutFile, "%3u: %5u [%4u] %-8s",
@@ -1046,8 +1034,8 @@ SrcNotes(JSContext *cx, JSScript *script)
             caseOff = (uintN) js_GetSrcNoteOffset(sn, 1);
             if (caseOff)
                 fprintf(gOutFile, " first case offset %u", caseOff);
-            GetSwitchTableBounds(script, offset,
-                                 &switchTableStart, &switchTableEnd);
+            UpdateSwitchTableBounds(script, offset,
+                                    &switchTableStart, &switchTableEnd);
             break;
           case SRC_CATCH:
             delta = (uintN) js_GetSrcNoteOffset(sn, 0);
@@ -1080,19 +1068,29 @@ Notes(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
     return JS_TRUE;
 }
 
+JS_STATIC_ASSERT(JSTN_CATCH == 0);
+JS_STATIC_ASSERT(JSTN_FINALLY == 1);
+
+static const char* const TryNoteNames[] = { "catch", "finally" };
+
 static JSBool
 TryNotes(JSContext *cx, JSScript *script)
 {
-    JSTryNote *tn = script->trynotes;
+    JSTryNote *tn, *tnlimit;
 
-    if (!tn)
+    if (!script->trynotes)
         return JS_TRUE;
-    fprintf(gOutFile, "\nException table:\nstart\tend\tcatch\n");
-    while (tn->start && tn->catchStart) {
-        fprintf(gOutFile, "  %d\t%d\t%d\n",
-               tn->start, tn->start + tn->length, tn->catchStart);
-        tn++;
-    }
+
+    tn = script->trynotes->notes;
+    tnlimit = tn + script->trynotes->length;
+    fprintf(gOutFile, "\nException table:\n"
+            "kind      stack    start      end\n");
+    do {
+        JS_ASSERT(tn->kind == JSTN_CATCH || tn->kind == JSTN_FINALLY);
+        fprintf(gOutFile, " %-7s %6u %8u %8u\n",
+                TryNoteNames[tn->kind], tn->stackDepth,
+                tn->start, tn->start + tn->length);
+    } while (++tn != tnlimit);
     return JS_TRUE;
 }
 
@@ -1132,6 +1130,7 @@ Disassemble(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
                 SHOW_FLAG(THISP_STRING);
                 SHOW_FLAG(THISP_NUMBER);
                 SHOW_FLAG(THISP_BOOLEAN);
+                SHOW_FLAG(EXPR_CLOSURE);
                 SHOW_FLAG(INTERPRETED);
 
 #undef SHOW_FLAG
@@ -1376,6 +1375,85 @@ DumpStats(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
         }
     }
     return JS_TRUE;
+}
+
+static JSBool
+DumpHeap(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
+{
+    char *fileName = NULL;
+    void* startThing = NULL;
+    uint32 startTraceKind = 0;
+    void *thingToFind = NULL;
+    size_t maxDepth = (size_t)-1;
+    void *thingToIgnore = NULL;
+    jsval *vp;
+    FILE *dumpFile;
+    JSBool ok;
+
+    vp = &argv[0];
+    if (*vp != JSVAL_NULL && *vp != JSVAL_VOID) {
+        JSString *str;
+
+        str = JS_ValueToString(cx, *vp);
+        if (!str)
+            return JS_FALSE;
+        *vp = STRING_TO_JSVAL(str);
+        fileName = JS_GetStringBytes(str);
+    }
+
+    vp = &argv[1];
+    if (*vp != JSVAL_NULL && *vp != JSVAL_VOID) {
+        if (!JSVAL_IS_TRACEABLE(*vp))
+            goto not_traceable_arg;
+        startThing = JSVAL_TO_TRACEABLE(*vp);
+        startTraceKind = JSVAL_TRACE_KIND(*vp);
+    }
+
+    vp = &argv[2];
+    if (*vp != JSVAL_NULL && *vp != JSVAL_VOID) {
+        if (!JSVAL_IS_TRACEABLE(*vp))
+            goto not_traceable_arg;
+        thingToFind = JSVAL_TO_TRACEABLE(*vp);
+    }
+
+    vp = &argv[3];
+    if (*vp != JSVAL_NULL && *vp != JSVAL_VOID) {
+        uint32 depth;
+
+        if (!JS_ValueToECMAUint32(cx, *vp, &depth))
+            return JS_FALSE;
+        maxDepth = depth;
+    }
+
+    vp = &argv[4];
+    if (*vp != JSVAL_NULL && *vp != JSVAL_VOID) {
+        if (!JSVAL_IS_TRACEABLE(*vp))
+            goto not_traceable_arg;
+        thingToIgnore = JSVAL_TO_TRACEABLE(*vp);
+    }
+
+    if (!fileName) {
+        dumpFile = stdout;
+    } else {
+        dumpFile = fopen(fileName, "w");
+        if (!dumpFile) {
+            fprintf(gErrFile, "dumpHeap: can't open %s: %s\n",
+                    fileName, strerror(errno));
+            return JS_FALSE;
+        }
+    }
+
+    ok = JS_DumpHeap(cx, dumpFile, startThing, startTraceKind, thingToFind,
+                     maxDepth, thingToIgnore);
+    if (dumpFile != stdout)
+        fclose(dumpFile);
+    return ok;
+
+  not_traceable_arg:
+    fprintf(gErrFile,
+            "dumpHeap: argument %u is not null or a heap-allocated thing\n",
+            (unsigned)(vp - argv));
+    return JS_FALSE;
 }
 
 #endif /* DEBUG */
@@ -1677,19 +1755,19 @@ ToInt32(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
 }
 
 static JSBool
-StringsAreUtf8(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
+StringsAreUTF8(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
                jsval *rval)
 {
     *rval = JS_CStringsAreUTF8() ? JSVAL_TRUE : JSVAL_FALSE;
     return JS_TRUE;
 }
 
-static const char* badUtf8 = "...\xC0...";
-static const char* bigUtf8 = "...\xFB\xBF\xBF\xBF\xBF...";
+static const char* badUTF8 = "...\xC0...";
+static const char* bigUTF8 = "...\xFB\xBF\xBF\xBF\xBF...";
 static const jschar badSurrogate[] = { 'A', 'B', 'C', 0xDEEE, 'D', 'E', 0 };
 
 static JSBool
-TestUtf8(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
+TestUTF8(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
 {
     intN mode = 1;
     jschar chars[20];
@@ -1703,11 +1781,11 @@ TestUtf8(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
     switch (mode) {
       /* mode 1: malformed UTF-8 string. */
       case 1:
-        JS_NewStringCopyZ(cx, badUtf8);
+        JS_NewStringCopyZ(cx, badUTF8);
         break;
       /* mode 2: big UTF-8 character. */
       case 2:
-        JS_NewStringCopyZ(cx, bigUtf8);
+        JS_NewStringCopyZ(cx, bigUTF8);
         break;
       /* mode 3: bad surrogate character. */
       case 3:
@@ -2149,18 +2227,19 @@ static JSFunctionSpec shell_functions[] = {
     {"quit",            Quit,           0,0,0},
     {"gc",              GC,             0,0,0},
 #ifdef JS_GC_ZEAL
-    {"gczeal",          GCZeal,         1,0,0},
+    {"gczeal",        GCZeal,       1,0,0},
 #endif
     {"trap",            Trap,           3,0,0},
     {"untrap",          Untrap,         2,0,0},
     {"line2pc",         LineToPC,       0,0,0},
     {"pc2line",         PCToLine,       0,0,0},
-    {"stringsAreUtf8",  StringsAreUtf8, 0,0,0},
-    {"testUtf8",        TestUtf8,       1,0,0},
+    {"stringsAreUTF8",  StringsAreUTF8, 0,0,0},
+    {"testUTF8",        TestUTF8,       1,0,0},
     {"throwError",      ThrowError,     0,0,0},
 #ifdef DEBUG
     {"dis",             Disassemble,    1,0,0},
     {"dissrc",          DisassWithSrc,  1,0,0},
+    {"dumpHeap",        DumpHeap,       5,0,0},
     {"notes",           Notes,          1,0,0},
     {"tracing",         Tracing,        0,0,0},
     {"stats",           DumpStats,      1,0,0},
@@ -2207,6 +2286,8 @@ static char *shell_help_messages[] = {
 #ifdef DEBUG
     "dis([fun])             Disassemble functions into bytecodes",
     "dissrc([fun])          Disassemble functions with source lines",
+    "dumpHeap([fileName], [start], [toFind], [maxDepth], [toIgnore])\n"
+    "                       Interface to JS_DumpHeap with output sent to file",
     "notes([fun])           Show source notes for functions",
     "tracing([toggle])      Turn tracing on or off",
     "stats([string ...])    Dump 'arena', 'atom', 'global' stats",

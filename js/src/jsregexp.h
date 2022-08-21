@@ -52,7 +52,6 @@
 
 struct JSRegExpStatics {
     JSString    *input;         /* input string to match (perl $_, GC root) */
-    JSString    *pendingInput;  /* pending input string to match */
     JSBool      multiline;      /* whether input contains newlines (perl $*) */
     uint16      parenCount;     /* number of valid elements in parens[] */
     uint16      moreLength;     /* number of allocated elements in moreParens */
@@ -63,9 +62,6 @@ struct JSRegExpStatics {
     JSSubString leftContext;    /* input to left of last match (perl $`) */
     JSSubString rightContext;   /* input to right of last match (perl $') */
 };
-
-void
-js_RegExpStatics_clear(JSContext *cx, JSRegExpStatics *res);
 
 /*
  * This struct holds a bitmap representation of a class from a regexp.
@@ -104,7 +100,7 @@ typedef struct RENode RENode;
 struct JSRegExp {
     jsrefcount   nrefs;         /* reference count */
     uint16       flags;         /* flags, see jsapi.h's JSREG_* defines */
-    uint16       cloneIndex;    /* index in fp->vars or funobj->slots of
+    uint16       cloneIndex;    /* index in fp->vars or funobj slots of
                                    cloned regexp object */
     size_t       parenCount;    /* number of parenthesized submatches */
     size_t       classCount;    /* count [...] bitmaps */

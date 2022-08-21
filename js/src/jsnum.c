@@ -306,7 +306,8 @@ num_toLocaleString(JSContext *cx, JSObject *obj, uintN argc,
     const char *numGrouping, *tmpGroup;
     JSRuntime *rt;
     JSString *numStr, *str;
-    char *num, *buf, *nint, *end, *tmpSrc, *tmpDest;
+    const char *num, *end, *tmpSrc;
+    char *buf, *dec, *tmpDest;
     int digits, size, remainder, nrepeat;
 
     /*
@@ -317,30 +318,21 @@ num_toLocaleString(JSContext *cx, JSObject *obj, uintN argc,
         return JS_FALSE;
     JS_ASSERT(JSVAL_IS_STRING(*rval));
     numStr = JSVAL_TO_STRING(*rval);
-    num = js_GetStringBytes(cx->runtime, numStr);
+    num = js_GetStringBytes(cx, numStr);
+    if (!num)
+        return JS_FALSE;
 
-    /*
-     * Find the first non-integer value, whether it be a letter as in
-     * 'Infinity', a decimal point, or an 'e' from exponential notation.
-     */
-    nint = num;
-    if (*nint == '-')
-        nint++;
-    while(*nint >= '0' && *nint <= '9')
-        nint++;
-    digits = nint - num;
+    /* Find bit before the decimal. */
+    dec = strchr(num, '.');
+    digits = dec ? dec - num : (int)strlen(num);
     end = num + digits;
-    if (!digits)
-        return JS_TRUE;
 
     rt = cx->runtime;
     thousandsLength = strlen(rt->thousandsSeparator);
     decimalLength = strlen(rt->decimalSeparator);
 
     /* Figure out how long resulting string will be. */
-    size = digits + (*nint ? strlen(nint + 1) + 1 : 0);
-    if (*nint == '.')
-        size += decimalLength;
+    size = digits + (dec ? decimalLength + strlen(dec + 1) : 0);
 
     numGrouping = tmpGroup = rt->numGrouping;
     remainder = digits;
@@ -382,12 +374,12 @@ num_toLocaleString(JSContext *cx, JSObject *obj, uintN argc,
             tmpGroup--;
     }
 
-    if (*nint == '.') {
+    if (dec) {
         strcpy(tmpDest, rt->decimalSeparator);
         tmpDest += decimalLength;
-        strcpy(tmpDest, nint + 1);
+        strcpy(tmpDest, dec + 1);
     } else {
-        strcpy(tmpDest, nint);
+        *tmpDest++ = '\0';
     }
 
     if (cx->localeCallbacks && cx->localeCallbacks->localeToUnicode)
@@ -842,7 +834,6 @@ JSBool
 js_ValueToInt32(JSContext *cx, jsval v, int32 *ip)
 {
     jsdouble d;
-    JSString *str;
 
     if (JSVAL_IS_INT(v)) {
         *ip = JSVAL_TO_INT(v);
@@ -851,12 +842,8 @@ js_ValueToInt32(JSContext *cx, jsval v, int32 *ip)
     if (!js_ValueToNumber(cx, v, &d))
         return JS_FALSE;
     if (JSDOUBLE_IS_NaN(d) || d <= -2147483649.0 || 2147483648.0 <= d) {
-        str = js_DecompileValueGenerator(cx, JSDVG_SEARCH_STACK, v, NULL);
-        if (str) {
-            JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL,
-                                 JSMSG_CANT_CONVERT, JS_GetStringBytes(str));
-
-        }
+        js_ReportValueError(cx, JSMSG_CANT_CONVERT,
+                            JSDVG_SEARCH_STACK, v, NULL);
         return JS_FALSE;
     }
     *ip = (int32)floor(d + 0.5);     /* Round to nearest */

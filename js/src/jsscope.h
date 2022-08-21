@@ -258,7 +258,7 @@ struct JSScopeProperty {
     jsid            id;                 /* int-tagged jsval/untagged JSAtom* */
     JSPropertyOp    getter;             /* getter and setter hooks or objects */
     JSPropertyOp    setter;
-    uint32          slot;               /* index in obj->slots vector */
+    uint32          slot;               /* abstract index in object slots */
     uint8           attrs;              /* attributes, see jsapi.h JSPROP_* */
     uint8           flags;              /* flags, see below for defines */
     int16           shortid;            /* tinyid, or local arg/var index */
@@ -386,17 +386,17 @@ js_ClearScope(JSContext *cx, JSScope *scope);
  * We retain them for internal backward compatibility, and in case one or both
  * ever shrink to inline-able size.
  */
-#define MARK_ID(cx,id)                js_MarkId(cx, id)
-#define MARK_SCOPE_PROPERTY(cx,sprop) js_MarkScopeProperty(cx, sprop)
+#define TRACE_ID(trc, id)                js_TraceId(trc, id)
+#define TRACE_SCOPE_PROPERTY(trc, sprop) js_TraceScopeProperty(trc, sprop)
 
 extern void
-js_MarkId(JSContext *cx, jsid id);
+js_TraceId(JSTracer *trc, jsid id);
 
 extern void
-js_MarkScopeProperty(JSContext *cx, JSScopeProperty *sprop);
+js_TraceScopeProperty(JSTracer *trc, JSScopeProperty *sprop);
 
 extern void
-js_SweepScopeProperties(JSRuntime *rt);
+js_SweepScopeProperties(JSContext *cx);
 
 extern JSBool
 js_InitPropertyTree(JSRuntime *rt);

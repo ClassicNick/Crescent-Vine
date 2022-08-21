@@ -66,6 +66,30 @@
 #include "jsstr.h"
 
 #ifdef JS_THREADSAFE
+#include "prtypes.h"
+
+/*
+ * The index for JSThread info, returned by PR_NewThreadPrivateIndex.  The
+ * index value is visible and shared by all threads, but the data associated
+ * with it is private to each thread.
+ */
+static PRUintn threadTPIndex;
+static JSBool  tpIndexInited = JS_FALSE;
+
+JSBool
+js_InitThreadPrivateIndex(void *ptr)
+{
+    PRStatus status;
+
+    if (tpIndexInited)
+        return JS_TRUE;
+
+    status = PR_NewThreadPrivateIndex(&threadTPIndex, ptr);
+
+    if (status == PR_SUCCESS)
+        tpIndexInited = JS_TRUE;
+    return status == PR_SUCCESS;
+}
 
 /*
  * Callback function to delete a JSThread info when the thread that owns it
@@ -104,13 +128,13 @@ js_GetCurrentThread(JSRuntime *rt)
 {
     JSThread *thread;
 
-    thread = (JSThread *)PR_GetThreadPrivate(rt->threadTPIndex);
+    thread = (JSThread *)PR_GetThreadPrivate(threadTPIndex);
     if (!thread) {
         thread = (JSThread *) calloc(1, sizeof(JSThread));
         if (!thread)
             return NULL;
 
-        if (PR_FAILURE == PR_SetThreadPrivate(rt->threadTPIndex, thread)) {
+        if (PR_FAILURE == PR_SetThreadPrivate(threadTPIndex, thread)) {
             free(thread);
             return NULL;
         }
@@ -234,10 +258,8 @@ js_NewContext(JSRuntime *rt, size_t stackChunkSize)
      * done by js_DestroyContext).
      */
     cx->version = JSVERSION_DEFAULT;
-    cx->jsop_eq = JSOP_EQ;
-    cx->jsop_ne = JSOP_NE;
-    JS_InitArenaPool(&cx->stackPool, "stack", stackChunkSize, sizeof(jsval));
-    JS_InitArenaPool(&cx->tempPool, "temp", 1024, sizeof(jsdouble));
+    JS_INIT_ARENA_POOL(&cx->stackPool, "stack", stackChunkSize, sizeof(jsval));
+    JS_INIT_ARENA_POOL(&cx->tempPool, "temp", 1024, sizeof(jsdouble));
 
     if (!js_InitRegExpStatics(cx, &cx->regExpStatics)) {
         js_DestroyContext(cx, JSDCM_NEW_FAILED);
@@ -480,14 +502,6 @@ js_ContextIterator(JSRuntime *rt, JSBool unlocked, JSContext **iterp)
     return cx;
 }
 
-JS_STATIC_DLL_CALLBACK(const void *)
-resolving_GetKey(JSDHashTable *table, JSDHashEntryHdr *hdr)
-{
-    JSResolvingEntry *entry = (JSResolvingEntry *)hdr;
-
-    return &entry->key;
-}
-
 JS_STATIC_DLL_CALLBACK(JSDHashNumber)
 resolving_HashKey(JSDHashTable *table, const void *ptr)
 {
@@ -510,7 +524,6 @@ resolving_MatchEntry(JSDHashTable *table,
 static const JSDHashTableOps resolving_dhash_ops = {
     JS_DHashAllocTable,
     JS_DHashFreeTable,
-    resolving_GetKey,
     resolving_HashKey,
     resolving_MatchEntry,
     JS_DHashMoveEntryStub,
@@ -785,10 +798,11 @@ js_PushLocalRoot(JSContext *cx, JSLocalRootStack *lrs, jsval v)
 }
 
 void
-js_MarkLocalRoots(JSContext *cx, JSLocalRootStack *lrs)
+js_TraceLocalRoots(JSTracer *trc, JSLocalRootStack *lrs)
 {
     uint32 n, m, mark;
     JSLocalRootChunk *lrc;
+    jsval v;
 
     n = lrs->rootCount;
     if (n == 0)
@@ -798,13 +812,11 @@ js_MarkLocalRoots(JSContext *cx, JSLocalRootStack *lrs)
     lrc = lrs->topChunk;
     do {
         while (--n > mark) {
-#ifdef GC_MARK_DEBUG
-            char name[22];
-            JS_snprintf(name, sizeof name, "<local root %u>", n);
-#endif
             m = n & JSLRS_CHUNK_MASK;
-            JS_ASSERT(JSVAL_IS_GCTHING(lrc->roots[m]));
-            GC_MARK(cx, JSVAL_TO_GCTHING(lrc->roots[m]), name);
+            v = lrc->roots[m];
+            JS_ASSERT(JSVAL_IS_GCTHING(v) && v != JSVAL_NULL);
+            JS_SET_TRACING_INDEX(trc, "local_root", n);
+            js_CallValueTracerIfGCThing(trc, v);
             if (m == 0)
                 lrc = lrc->down;
         }
@@ -1207,6 +1219,26 @@ js_ReportIsNotDefined(JSContext *cx, const char *name)
     JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_NOT_DEFINED, name);
 }
 
+JSBool
+js_ReportValueErrorFlags(JSContext *cx, uintN flags, const uintN errorNumber,
+                         intN spindex, jsval v, JSString *fallback,
+                         const char *arg1, const char *arg2)
+{
+    char *bytes;
+    JSBool ok;
+
+    JS_ASSERT(js_ErrorFormatString[errorNumber].argCount >= 1);
+    JS_ASSERT(js_ErrorFormatString[errorNumber].argCount <= 3);
+    bytes = js_DecompileValueGenerator(cx, spindex, v, fallback);
+    if (!bytes)
+        return JS_FALSE;
+
+    ok = JS_ReportErrorFlagsAndNumber(cx, flags, js_GetErrorMessage,
+                                      NULL, errorNumber, bytes, arg1, arg2);
+    JS_free(cx, bytes);
+    return ok;
+}
+
 #if defined DEBUG && defined XP_UNIX
 /* For gdb usage. */
 void js_traceon(JSContext *cx)  { cx->tracefp = stderr; }
@@ -1220,10 +1252,19 @@ JSErrorFormatString js_ErrorFormatString[JSErr_Limit] = {
 #undef MSG_DEF
 };
 
-JS_PUBLIC_API(const JSErrorFormatString *)
+const JSErrorFormatString *
 js_GetErrorMessage(void *userRef, const char *locale, const uintN errorNumber)
 {
     if ((errorNumber > 0) && (errorNumber < JSErr_Limit))
         return &js_ErrorFormatString[errorNumber];
     return NULL;
+}
+
+JSBool
+js_ResetOperationCounter(JSContext *cx)
+{
+    JS_ASSERT(cx->operationCounter & JSOW_BRANCH_CALLBACK);
+
+    cx->operationCounter = 0;
+    return !cx->branchCallback || cx->branchCallback(cx, NULL);
 }

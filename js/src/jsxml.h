@@ -64,7 +64,7 @@ js_NewXMLNamespace(JSContext *cx, JSString *prefix, JSString *uri,
                    JSBool declared);
 
 extern void
-js_MarkXMLNamespace(JSContext *cx, JSXMLNamespace *ns);
+js_TraceXMLNamespace(JSTracer *trc, JSXMLNamespace *ns);
 
 extern void
 js_FinalizeXMLNamespace(JSContext *cx, JSXMLNamespace *ns);
@@ -88,7 +88,7 @@ js_NewXMLQName(JSContext *cx, JSString *uri, JSString *prefix,
                JSString *localName);
 
 extern void
-js_MarkXMLQName(JSContext *cx, JSXMLQName *qn);
+js_TraceXMLQName(JSTracer *trc, JSXMLQName *qn);
 
 extern void
 js_FinalizeXMLQName(JSContext *cx, JSXMLQName *qn);
@@ -203,7 +203,7 @@ extern JSXML *
 js_NewXML(JSContext *cx, JSXMLClass xml_class);
 
 extern void
-js_MarkXML(JSContext *cx, JSXML *xml);
+js_TraceXML(JSTracer *trc, JSXML *xml);
 
 extern void
 js_FinalizeXML(JSContext *cx, JSXML *xml);
@@ -226,7 +226,8 @@ extern JS_FRIEND_DATA(JSClass)          js_AnyNameClass;
 
 /*
  * Macros to test whether an object or a value is of type "xml" (per typeof).
- * NB: jsapi.h must be included before any call to VALUE_IS_XML.
+ * NB: jsobj.h must be included before any call to OBJECT_IS_XML, and jsapi.h
+ * and jsobj.h must be included before any call to VALUE_IS_XML.
  */
 #define OBJECT_IS_XML(cx,obj)   ((obj)->map->ops == &js_XMLObjectOps.base)
 #define VALUE_IS_XML(cx,v)      (!JSVAL_IS_PRIMITIVE(v) &&                    \
@@ -253,6 +254,13 @@ js_InitXMLClasses(JSContext *cx, JSObject *obj);
 extern JSBool
 js_GetFunctionNamespace(JSContext *cx, jsval *vp);
 
+/*
+ * If obj is QName corresponding to function::name, set *funidp to name's id,
+ * otherwise set *funidp to 0.
+ */
+JSBool
+js_IsFunctionQName(JSContext *cx, JSObject *obj, jsid *funidp);
+
 extern JSBool
 js_GetDefaultXMLNamespace(JSContext *cx, jsval *vp);
 
@@ -271,7 +279,7 @@ extern JSBool
 js_ToAttributeName(JSContext *cx, jsval *vp);
 
 extern JSString *
-js_EscapeAttributeValue(JSContext *cx, JSString *str, JSBool quote);
+js_EscapeAttributeValue(JSContext *cx, JSString *str);
 
 extern JSString *
 js_AddAttributePart(JSContext *cx, JSBool isName, JSString *str,
@@ -286,17 +294,14 @@ js_ValueToXMLString(JSContext *cx, jsval v);
 extern JSBool
 js_GetAnyName(JSContext *cx, jsval *vp);
 
+/*
+ * Note: nameval must be either QName, AttributeName, or AnyName.
+ */
 extern JSBool
-js_FindXMLProperty(JSContext *cx, jsval name, JSObject **objp, jsval *namep);
-
-extern JSBool
-js_GetXMLProperty(JSContext *cx, JSObject *obj, jsval name, jsval *vp);
+js_FindXMLProperty(JSContext *cx, jsval nameval, JSObject **objp, jsid *idp);
 
 extern JSBool
 js_GetXMLFunction(JSContext *cx, JSObject *obj, jsid id, jsval *vp);
-
-extern JSBool
-js_SetXMLProperty(JSContext *cx, JSObject *obj, jsval name, jsval *vp);
 
 extern JSBool
 js_GetXMLDescendants(JSContext *cx, JSObject *obj, jsval id, jsval *vp);
