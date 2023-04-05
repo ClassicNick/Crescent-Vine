@@ -1247,7 +1247,7 @@ XMLArrayTruncate(JSContext *cx, JSXMLArray *array, uint32 length)
             free(array->vector);
         vector = NULL;
     } else {
-        vector = realloc(array->vector, length * sizeof(void *));
+        vector = (void **) realloc(array->vector, length * sizeof(void *));
         if (!vector)
             return;
     }
@@ -1409,7 +1409,7 @@ ParseNodeToQName(JSContext *cx, JSParseNode *pn, JSXMLArray *inScopeNSes,
     colon = js_strchr_limit(start, ':', limit);
     if (colon) {
         offset = PTRDIFF(colon, start, jschar);
-        prefix = js_NewDependentString(cx, str, 0, offset, 0);
+        prefix = js_NewDependentString(cx, str, 0, offset);
         if (!prefix)
             return NULL;
 
@@ -1447,7 +1447,7 @@ ParseNodeToQName(JSContext *cx, JSParseNode *pn, JSXMLArray *inScopeNSes,
             return NULL;
         }
 
-        localName = js_NewStringCopyN(cx, colon + 1, length - (offset + 1), 0);
+        localName = js_NewStringCopyN(cx, colon + 1, length - (offset + 1));
         if (!localName)
             return NULL;
     } else {
@@ -1502,7 +1502,7 @@ ChompXMLWhitespace(JSContext *cx, JSString *str)
     if (newlength == length)
         return str;
     offset = PTRDIFF(cp, start, jschar);
-    return js_NewDependentString(cx, str, offset, newlength, 0);
+    return js_NewDependentString(cx, str, offset, newlength);
 }
 
 static JSXML *
@@ -1685,7 +1685,7 @@ ParseNodeToXML(JSContext *cx, JSParseNode *pn, JSXMLArray *inScopeNSes,
                     /* 10.3.2.1. Step 6(h)(i)(1)(a). */
                     prefix = cx->runtime->emptyString;
                 } else {
-                    prefix = js_NewStringCopyN(cx, chars + 6, length - 6, 0);
+                    prefix = js_NewStringCopyN(cx, chars + 6, length - 6);
                     if (!prefix)
                         goto fail;
                 }
@@ -1960,6 +1960,7 @@ ParseXMLSource(JSContext *cx, JSString *src)
     uintN lineno;
     JSStackFrame *fp;
     JSOp op;
+    JSParseContext pc;
     JSParseNode *pn;
     JSXMLArray nsarray;
     uintN flags;
@@ -2019,7 +2020,9 @@ ParseXMLSource(JSContext *cx, JSString *src)
         }
     }
 
-    JS_KEEP_ATOMS(cx->runtime);
+    js_InitParseContext(cx, &pc);
+    JS_ASSERT(!ts->parseContext);
+    ts->parseContext = &pc;
     pn = js_ParseXMLTokenStream(cx, cx->fp->scopeChain, ts, JS_FALSE);
     if (pn && XMLArrayInit(cx, &nsarray, 1)) {
         if (GetXMLSettingFlags(cx, &flags))
@@ -2027,7 +2030,7 @@ ParseXMLSource(JSContext *cx, JSString *src)
 
         XMLArrayFinish(cx, &nsarray);
     }
-    JS_UNKEEP_ATOMS(cx->runtime);
+    js_FinishParseContext(cx, &pc);
 
 out:
     JS_ARENA_RELEASE(&cx->tempPool, mark);
@@ -2596,7 +2599,7 @@ GeneratePrefix(JSContext *cx, JSString *uri, JSXMLArray *decls)
     bp = (jschar *) cp;
     newlength = length;
     if (STARTS_WITH_XML(cp, length) || !IsXMLName(cp, length)) {
-        newlength = length + 2 + (size_t) log10(decls->length);
+        newlength = length + 2 + (size_t) log10((double) decls->length);
         bp = (jschar *)
              JS_malloc(cx, (newlength + 1) * sizeof(jschar));
         if (!bp)
@@ -2621,7 +2624,7 @@ GeneratePrefix(JSContext *cx, JSString *uri, JSXMLArray *decls)
                 !memcmp(JSSTRING_CHARS(ns->prefix), bp,
                         newlength * sizeof(jschar))) {
                 if (bp == cp) {
-                    newlength = length + 2 + (size_t) log10(n);
+                    newlength = length + 2 + (size_t) log10((double) n);
                     bp = (jschar *)
                          JS_malloc(cx, (newlength + 1) * sizeof(jschar));
                     if (!bp)
@@ -2631,7 +2634,7 @@ GeneratePrefix(JSContext *cx, JSString *uri, JSXMLArray *decls)
 
                 ++serial;
                 JS_ASSERT(serial <= n);
-                dp = bp + length + 2 + (size_t) log10(serial);
+                dp = bp + length + 2 + (size_t) log10((double) serial);
                 *dp = 0;
                 for (m = serial; m != 0; m /= 10)
                     *--dp = (jschar)('0' + m % 10);
@@ -2646,7 +2649,7 @@ GeneratePrefix(JSContext *cx, JSString *uri, JSXMLArray *decls)
 
     if (bp == cp) {
         offset = PTRDIFF(cp, start, jschar);
-        prefix = js_NewDependentString(cx, uri, offset, length, 0);
+        prefix = js_NewDependentString(cx, uri, offset, length);
     } else {
         prefix = js_NewString(cx, bp, newlength, 0);
         if (!prefix)
@@ -3202,7 +3205,7 @@ ToXMLName(JSContext *cx, jsval v, jsid *funidp)
         goto bad;
 
     if (*JSSTRING_CHARS(name) == '@') {
-        name = js_NewDependentString(cx, name, 1, JSSTRING_LENGTH(name) - 1, 0);
+        name = js_NewDependentString(cx, name, 1, JSSTRING_LENGTH(name) - 1);
         if (!name)
             return NULL;
         *funidp = 0;
@@ -3428,7 +3431,7 @@ DeepCopyInLRS(JSContext *cx, JSXML *xml, uintN flags)
     /* Our caller must be protecting newborn objects. */
     JS_ASSERT(cx->localRootStack);
 
-    copy = js_NewXML(cx, xml->xml_class);
+    copy = js_NewXML(cx, (JSXMLClass) xml->xml_class);
     if (!copy)
         return NULL;
     qn = xml->name;
@@ -5248,7 +5251,7 @@ xml_enumerate(JSContext *cx, JSObject *obj, JSIterateOp enum_op,
         break;
 
       case JSENUMERATE_NEXT:
-        cursor = JSVAL_TO_PRIVATE(*statep);
+        cursor = (JSXMLArrayCursor *) JSVAL_TO_PRIVATE(*statep);
         if (cursor && cursor->array && (index = cursor->index) < length) {
             *idp = INT_TO_JSID(index);
             cursor->index = index + 1;
@@ -5257,7 +5260,7 @@ xml_enumerate(JSContext *cx, JSObject *obj, JSIterateOp enum_op,
         /* FALL THROUGH */
 
       case JSENUMERATE_DESTROY:
-        cursor = JSVAL_TO_PRIVATE(*statep);
+        cursor = (JSXMLArrayCursor *) JSVAL_TO_PRIVATE(*statep);
         if (cursor) {
             XMLArrayCursorFinish(cursor);
             JS_free(cx, cursor);
@@ -5384,7 +5387,7 @@ xml_enumerateValues(JSContext *cx, JSObject *obj, JSIterateOp enum_op,
         break;
 
       case JSENUMERATE_NEXT:
-        cursor = JSVAL_TO_PRIVATE(*statep);
+        cursor = (JSXMLArrayCursor *) JSVAL_TO_PRIVATE(*statep);
         if (cursor && cursor->array && (index = cursor->index) < length) {
             while (!(kid = XMLARRAY_MEMBER(&xml->xml_kids, index, JSXML))) {
                 if (++index == length)
@@ -5402,7 +5405,7 @@ xml_enumerateValues(JSContext *cx, JSObject *obj, JSIterateOp enum_op,
         /* FALL THROUGH */
 
       case JSENUMERATE_DESTROY:
-        cursor = JSVAL_TO_PRIVATE(*statep);
+        cursor = (JSXMLArrayCursor *) JSVAL_TO_PRIVATE(*statep);
         if (cursor) {
       destroy:
             XMLArrayCursorFinish(cursor);
@@ -7389,7 +7392,7 @@ XMLList(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
 }
 
 #define JSXML_LIST_SIZE     (offsetof(JSXML, u) + sizeof(struct JSXMLListVar))
-#define JSXML_ELEMENT_SIZE  (offsetof(JSXML, u) + sizeof(struct JSXMLVar))
+#define JSXML_ELEMENT_SIZE  (offsetof(JSXML, u) + sizeof(struct JSXMLElemVar))
 #define JSXML_LEAF_SIZE     (offsetof(JSXML, u) + sizeof(JSString *))
 
 static size_t sizeof_JSXML[JSXML_CLASS_LIMIT] = {
@@ -7876,8 +7879,7 @@ js_AddAttributePart(JSContext *cx, JSBool isName, JSString *str, JSString *str2)
 
     if (JSSTRING_IS_DEPENDENT(str) ||
         !(*js_GetGCThingFlags(str) & GCF_MUTABLE)) {
-        str = js_NewStringCopyN(cx, JSSTRING_CHARS(str), JSSTRING_LENGTH(str),
-                                0);
+        str = js_NewStringCopyN(cx, JSSTRING_CHARS(str), JSSTRING_LENGTH(str));
         if (!str)
             return NULL;
     }

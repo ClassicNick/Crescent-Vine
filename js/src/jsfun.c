@@ -545,7 +545,7 @@ args_or_call_trace(JSTracer *trc, JSObject *obj)
 {
     JSStackFrame *fp;
 
-    fp = JS_GetPrivate(trc->context, obj);
+    fp = (JSStackFrame *) JS_GetPrivate(trc->context, obj);
     if (fp && (fp->flags & JSFRAME_GENERATOR)) {
         JS_CALL_OBJECT_TRACER(trc, FRAME_TO_GENERATOR(fp)->obj,
                               "FRAME_TO_GENERATOR(fp)->obj");
@@ -797,7 +797,7 @@ call_enumerate(JSContext *cx, JSObject *obj)
         JS_ASSERT(JSID_IS_ATOM(sprop->id));
         atom = JSID_TO_ATOM(sprop->id);
         JS_ASSERT(atom->flags & ATOM_HIDDEN);
-        atom = atom->entry.value;
+        atom = (JSAtom *) atom->entry.value;
 
         if (!js_LookupProperty(cx, obj, ATOM_TO_JSID(atom), &pobj, &prop))
             return JS_FALSE;
@@ -1178,7 +1178,8 @@ fun_resolve(JSContext *cx, JSObject *obj, jsval id, uintN flags,
                  * root until then to protect pval in case it is figuratively
                  * up in the air, with no strong refs protecting it.
                  */
-                cx->weakRoots.newborn[GCX_OBJECT] = JSVAL_TO_GCTHING(pval);
+                cx->weakRoots.newborn[GCX_OBJECT] =
+                    (JSGCThing *)JSVAL_TO_GCTHING(pval);
                 parentProto = JSVAL_TO_OBJECT(pval);
             }
         }
@@ -1325,7 +1326,7 @@ fun_xdrObject(JSXDRState *xdr, JSObject **objp)
             return JS_FALSE;
         }
         nullAtom = !fun->atom;
-        flagsword = ((uint32)fun->u.i.nregexps << 16) | fun->flags;
+        flagsword = fun->flags;
         extraUnused = 0;
     } else {
         fun = js_NewFunction(cx, NULL, NULL, 0, 0, NULL, NULL);
@@ -1454,7 +1455,6 @@ fun_xdrObject(JSXDRState *xdr, JSObject **objp)
 
     if (xdr->mode == JSXDR_DECODE) {
         fun->flags = (uint16) flagsword | JSFUN_INTERPRETED;
-        fun->u.i.nregexps = (uint16) (flagsword >> 16);
 
         *objp = fun->object;
         js_CallNewScriptHook(cx, fun->u.i.script, fun);
@@ -1528,7 +1528,10 @@ fun_reserveSlots(JSContext *cx, JSObject *obj)
     JSFunction *fun;
 
     fun = (JSFunction *) JS_GetPrivate(cx, obj);
-    return (fun && FUN_INTERPRETED(fun)) ? fun->u.i.nregexps : 0;
+    return (fun && FUN_INTERPRETED(fun) &&
+            fun->u.i.script && fun->u.i.script->regexpsOffset != 0)
+           ? JS_SCRIPT_REGEXPS(fun->u.i.script)->length
+           : 0;
 }
 
 /*
@@ -2084,15 +2087,11 @@ Function(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
 
     if (argc) {
         str = js_ValueToString(cx, argv[argc-1]);
+        if (!str)
+            return JS_FALSE;
+        argv[argc-1] = STRING_TO_JSVAL(str);
     } else {
-        /* Can't use cx->runtime->emptyString because we're called too early. */
-        str = js_NewStringCopyZ(cx, js_empty_ucstr, 0);
-    }
-    if (!str)
-        return JS_FALSE;
-    if (argv) {
-        /* Use the last arg (or this if argc == 0) as a local GC root. */
-        argv[(intN)(argc-1)] = STRING_TO_JSVAL(str);
+        str = cx->runtime->emptyString;
     }
 
     mark = JS_ARENA_MARK(&cx->tempPool);
@@ -2143,7 +2142,7 @@ js_InitFunctionClass(JSContext *cx, JSObject *obj)
     fun = js_NewFunction(cx, proto, NULL, 0, 0, obj, NULL);
     if (!fun)
         goto bad;
-    fun->u.i.script = js_NewScript(cx, 1, 0, 0);
+    fun->u.i.script = js_NewScript(cx, 1, 0, 0, 0, 0, 0);
     if (!fun->u.i.script)
         goto bad;
     fun->u.i.script->code[0] = JSOP_STOP;

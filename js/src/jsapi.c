@@ -805,6 +805,7 @@ JS_ShutDown(void)
 #ifdef JS_THREADSAFE
     js_CleanupLocks();
 #endif
+    PRMJ_NowShutdown();
 }
 
 JS_PUBLIC_API(void *)
@@ -1142,6 +1143,8 @@ JS_SetGlobalObject(JSContext *cx, JSObject *obj)
 #endif
 }
 
+JS_BEGIN_EXTERN_C
+
 JSObject *
 js_InitFunctionAndObjectClasses(JSContext *cx, JSObject *obj)
 {
@@ -1223,6 +1226,8 @@ out:
     }
     return fun_proto;
 }
+
+JS_END_EXTERN_C
 
 JS_PUBLIC_API(JSBool)
 JS_InitStandardClasses(JSContext *cx, JSObject *obj)
@@ -2346,24 +2351,12 @@ JS_IsGCMarkingTracer(JSTracer *trc)
 JS_PUBLIC_API(void)
 JS_GC(JSContext *cx)
 {
-#if JS_HAS_GENERATORS
-    /* Run previously scheduled but delayed close hooks. */
-    js_RunCloseHooks(cx);
-#endif
-
     /* Don't nuke active arenas if executing or compiling. */
     if (cx->stackPool.current == &cx->stackPool.first)
         JS_FinishArenaPool(&cx->stackPool);
     if (cx->tempPool.current == &cx->tempPool.first)
         JS_FinishArenaPool(&cx->tempPool);
     js_GC(cx, GC_NORMAL);
-
-#if JS_HAS_GENERATORS
-    /*
-     * Run close hooks for objects that became unreachable after the last GC.
-     */
-    js_RunCloseHooks(cx);
-#endif
 }
 
 JS_PUBLIC_API(void)
@@ -2435,12 +2428,6 @@ JS_MaybeGC(JSContext *cx)
         rt->gcMallocBytes >= rt->gcMaxMallocBytes) {
         JS_GC(cx);
     }
-#if JS_HAS_GENERATORS
-    else {
-        /* Run scheduled but not yet executed close hooks. */
-        js_RunCloseHooks(cx);
-    }
-#endif
 }
 
 JS_PUBLIC_API(JSGCCallback)
@@ -3701,7 +3688,7 @@ JS_ClearScope(JSContext *cx, JSObject *obj)
 
     /* Clear cached class objects on the global object. */
     if (JS_GET_CLASS(cx, obj)->flags & JSCLASS_IS_GLOBAL) {
-        JSProtoKey key;
+        int key;
 
         for (key = JSProto_Null; key < JSProto_LIMIT; key++)
             JS_SetReservedSlot(cx, obj, key, JSVAL_VOID);
@@ -4256,14 +4243,17 @@ CompileTokenStream(JSContext *cx, JSObject *obj, JSTokenStream *ts,
 {
     JSBool eof;
     JSArenaPool codePool, notePool;
+    JSParseContext pc;
     JSCodeGenerator cg;
     JSScript *script;
 
-    CHECK_REQUEST(cx);
     eof = JS_FALSE;
     JS_INIT_ARENA_POOL(&codePool, "code", 1024, sizeof(jsbytecode));
     JS_INIT_ARENA_POOL(&notePool, "note", 1024, sizeof(jssrcnote));
-    if (!js_InitCodeGenerator(cx, &cg, &codePool, &notePool,
+    js_InitParseContext(cx, &pc);
+    JS_ASSERT(!ts->parseContext);
+    ts->parseContext = &pc;
+    if (!js_InitCodeGenerator(cx, &cg, &pc, &codePool, &notePool,
                               ts->filename, ts->lineno,
                               ts->principals)) {
         script = NULL;
@@ -4280,10 +4270,13 @@ CompileTokenStream(JSContext *cx, JSObject *obj, JSTokenStream *ts,
             js_DestroyScript(cx, script);
         script = NULL;
     }
-    cg.tempMark = tempMark;
+
     js_FinishCodeGenerator(cx, &cg);
+    JS_ASSERT(ts->parseContext == &pc);
+    js_FinishParseContext(cx, &pc);
     JS_FinishArenaPool(&codePool);
     JS_FinishArenaPool(&notePool);
+    JS_ARENA_RELEASE(&cx->tempPool, tempMark);
     return script;
 }
 
@@ -4376,6 +4369,7 @@ JS_BufferIsCompilableUnit(JSContext *cx, JSObject *obj,
     JSExceptionState *exnState;
     void *tempMark;
     JSTokenStream *ts;
+    JSParseContext pc;
     JSErrorReporter older;
 
     CHECK_REQUEST(cx);
@@ -4393,6 +4387,9 @@ JS_BufferIsCompilableUnit(JSContext *cx, JSObject *obj,
     ts = js_NewTokenStream(cx, chars, length, NULL, 0, NULL);
     if (ts) {
         older = JS_SetErrorReporter(cx, NULL);
+        js_InitParseContext(cx, &pc);
+        JS_ASSERT(!ts->parseContext);
+        ts->parseContext = &pc;
         if (!js_ParseTokenStream(cx, obj, ts) &&
             (ts->flags & TSF_UNEXPECTED_EOF)) {
             /*
@@ -4403,11 +4400,13 @@ JS_BufferIsCompilableUnit(JSContext *cx, JSObject *obj,
             result = JS_FALSE;
         }
 
+        JS_ASSERT(ts->parseContext == &pc);
+        js_FinishParseContext(cx, &pc);
         JS_SetErrorReporter(cx, older);
         js_CloseTokenStream(cx, ts);
-        JS_ARENA_RELEASE(&cx->tempPool, tempMark);
     }
 
+    JS_ARENA_RELEASE(&cx->tempPool, tempMark);
     JS_free(cx, chars);
     JS_RestoreExceptionState(cx, exnState);
     return result;
@@ -5010,7 +5009,7 @@ JS_PUBLIC_API(JSString *)
 JS_NewUCStringCopyN(JSContext *cx, const jschar *s, size_t n)
 {
     CHECK_REQUEST(cx);
-    return js_NewStringCopyN(cx, s, n, 0);
+    return js_NewStringCopyN(cx, s, n);
 }
 
 JS_PUBLIC_API(JSString *)
@@ -5019,7 +5018,7 @@ JS_NewUCStringCopyZ(JSContext *cx, const jschar *s)
     CHECK_REQUEST(cx);
     if (!s)
         return cx->runtime->emptyString;
-    return js_NewStringCopyZ(cx, s, 0);
+    return js_NewStringCopyZ(cx, s);
 }
 
 JS_PUBLIC_API(JSString *)
@@ -5108,7 +5107,7 @@ JS_NewDependentString(JSContext *cx, JSString *str, size_t start,
                       size_t length)
 {
     CHECK_REQUEST(cx);
-    return js_NewDependentString(cx, str, start, length, 0);
+    return js_NewDependentString(cx, str, start, length);
 }
 
 JS_PUBLIC_API(JSString *)
