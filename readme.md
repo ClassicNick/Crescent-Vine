@@ -1,9 +1,8 @@
 # Crescent-Vine
 
-Crescent-Vine is a fork of Gecko 1.8.1 for improved compatibility on the modern web, with Windows 95 and Windows NT 3.51 in mind. Right now, Crescent-Vine's rendering capabilities are pretty similar to RetroZilla 2.2, and Firefox 2.0's, but as Crescent-Vine progresses, so will its capabilities. Version 1.0 of 
-Crescent-Vine is slated for full ECMAScript 2009 compliance, and is due end of 2022/early 2023.
+Crescent-Vine is a fork of Gecko 1.8.1 for improved compatibility on the modern web, with Windows 95 and Windows NT 3.51 in mind. Right now, Crescent-Vine's rendering capabilities are pretty similar to RetroZilla 2.2, and Firefox 2.0's, but as Crescent-Vine progresses, so will its capabilities. 
 
-Winternight-Classic is currently the primary target of Crescent-Vine.
+Winternight-Classic (Firefox based) is currently the primary target of Crescent-Vine.
 
 ## Building
 
@@ -28,7 +27,9 @@ If start-msvc6.bat can't find your VC6 installation, add the following line to s
 ## Incremental Builds
 If you have already built Cresent-Vine and you would like to save time by building only a small subset of the program to test a change you made, run make from the corresponding folder in your object directory. Depending on what you changed, building should only take a few minutes.
 
-EX: If you made a change to `Crescent-Vine-VC6/xpfe/browser/resources/content/navigator.xul`, cd into `{OBJDIR}/xpfe/browser/resources/content` using MSYS shell and run `make`. Note: I haven't tested doing this...
+EX: If you made a change to `Crescent-Vine-VC6/xpfe/browser/resources/content/navigator.xul`, cd into `{OBJDIR}/xpfe/browser/resources/content` using MSYS shell and run `make`. Note: This only partially works... If you get lots of errors in a specific directory, then it is very wise to do this to save on time. If you have build success, the compiler will sometimes skip over all the files, even if they have been changed.
 
 ## Creating a compressed installer
 I don't know how to create the official installer, so instead, I go into "C:\mozilla-build\Version1.2\nsis-2.22\Bin", and run "zip2exe.exe", and create a fake, 1/2 functional compressed installer that way.
+
+Update: It is possible to create the installer by BUILDING USING STATIC LIBRARIES (mozconfig-browser-static.txt), then change directory to the object directory, then run "make -C browser/installer installer". 
