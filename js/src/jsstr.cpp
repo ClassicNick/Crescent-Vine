@@ -182,7 +182,7 @@ js_ConcatStrings(JSContext *cx, JSString *left, JSString *right)
         if (!ldep) {
             JS_free(cx, s);
         } else {
-            s = JS_realloc(cx, ls, (ln + 1) * sizeof(jschar));
+            s = (jschar *) JS_realloc(cx, ls, (ln + 1) * sizeof(jschar));
             if (s)
                 left->chars = s;
         }
@@ -4511,7 +4511,7 @@ AddCharsToURI(JSContext *cx, JSString *str, const jschar *chars, size_t length)
     if (!str->chars ||
         JS_HOWMANY(total, URI_CHUNK) > JS_HOWMANY(str->length + 1, URI_CHUNK)) {
         total = JS_ROUNDUP(total, URI_CHUNK);
-        str->chars = JS_realloc(cx, str->chars, total * sizeof(jschar));
+        str->chars = (unsigned short *) JS_realloc(cx, str->chars, total * sizeof(jschar));
         if (!str->chars)
             return JS_FALSE;
     }

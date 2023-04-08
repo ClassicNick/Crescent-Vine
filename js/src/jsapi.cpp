@@ -1018,7 +1018,7 @@ JS_ContextIterator(JSRuntime *rt, JSContext **iterp)
 JS_PUBLIC_API(JSVersion)
 JS_GetVersion(JSContext *cx)
 {
-    return cx->version & JSVERSION_MASK;
+    return JSVERSION_NUMBER(cx);
 }
 
 JS_PUBLIC_API(JSVersion)
@@ -1029,7 +1029,7 @@ JS_SetVersion(JSContext *cx, JSVersion version)
     JS_ASSERT(version != JSVERSION_UNKNOWN);
     JS_ASSERT((version & ~JSVERSION_MASK) == 0);
 
-    oldVersion = cx->version & JSVERSION_MASK;
+    oldVersion = JSVERSION_NUMBER(cx);
     if (version == oldVersion)
         return oldVersion;
 
@@ -3241,7 +3241,7 @@ JS_ClearScope(JSContext *cx, JSObject *obj)
 
     /* Clear cached class objects on the global object. */
     if (JS_GET_CLASS(cx, obj)->flags & JSCLASS_IS_GLOBAL) {
-        JSProtoKey key;
+        int key;
 
         for (key = JSProto_Null; key < JSProto_LIMIT; key++)
             JS_SetReservedSlot(cx, obj, key, JSVAL_VOID);

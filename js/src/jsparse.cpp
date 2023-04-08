@@ -4327,7 +4327,7 @@ MemberExpr(JSContext *cx, JSTokenStream *ts, JSTreeContext *tc,
             pn3 = PrimaryExpr(cx, ts, tc, tt, JS_TRUE);
             if (!pn3)
                 return NULL;
-            tt = pn3->pn_type;
+            tt = PN_TYPE(pn3);
             if (tt == TOK_NAME ||
                 (tt == TOK_DBLCOLON &&
                  pn3->pn_arity == PN_NAME &&
@@ -4383,7 +4383,7 @@ MemberExpr(JSContext *cx, JSTokenStream *ts, JSTreeContext *tc,
             pn3 = PrimaryExpr(cx, ts, tc, tt, JS_TRUE);
             if (!pn3)
                 return NULL;
-            tt = pn3->pn_type;
+            tt = PN_TYPE(pn3);
             if (tt == TOK_NAME) {
                 pn3->pn_type = TOK_STRING;
                 pn3->pn_arity = PN_NULLARY;
@@ -5941,7 +5941,7 @@ FoldXMLConstants(JSContext *cx, JSParseNode *pn, JSTreeContext *tc)
     uint32 i, j;
 
     JS_ASSERT(pn->pn_arity == PN_LIST);
-    tt = pn->pn_type;
+    tt = PN_TYPE(pn);
     pnp = &pn->pn_head;
     pn1 = *pnp;
     accum = NULL;
@@ -6429,7 +6429,7 @@ js_FoldConstants(JSContext *cx, JSParseNode *pn, JSTreeContext *tc)
                     break;
             }
             if (!pn2) {
-                JSOp op = pn->pn_op;
+                JSOp op = PN_OP(pn);
 
                 pn2 = pn1->pn_next;
                 pn3 = pn2->pn_next;
@@ -6448,7 +6448,7 @@ js_FoldConstants(JSContext *cx, JSParseNode *pn, JSTreeContext *tc)
                 return JS_FALSE;
             }
             if (pn1->pn_type == TOK_NUMBER && pn2->pn_type == TOK_NUMBER) {
-                if (!FoldBinaryNumeric(cx, pn->pn_op, pn1, pn2, pn, tc))
+                if (!FoldBinaryNumeric(cx, PN_OP(pn), pn1, pn2, pn, tc))
                     return JS_FALSE;
             }
         }

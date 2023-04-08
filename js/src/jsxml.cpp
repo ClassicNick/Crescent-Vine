@@ -1262,7 +1262,7 @@ XMLArrayTruncate(JSContext *cx, JSXMLArray *array, uint32 length)
             free(array->vector);
         vector = NULL;
     } else {
-        vector = realloc(array->vector, length * sizeof(void *));
+        vector = (void **) realloc(array->vector, length * sizeof(void *));
         if (!vector)
             return;
     }
@@ -3431,7 +3431,7 @@ DeepCopyInLRS(JSContext *cx, JSXML *xml, uintN flags)
     /* Our caller must be protecting newborn objects. */
     JS_ASSERT(cx->localRootStack);
 
-    copy = js_NewXML(cx, xml->xml_class);
+    copy = js_NewXML(cx, (JSXMLClass) xml->xml_class);
     if (!copy)
         return NULL;
     qn = xml->name;
@@ -5295,7 +5295,7 @@ xml_enumerate(JSContext *cx, JSObject *obj, JSIterateOp enum_op,
         break;
 
       case JSENUMERATE_NEXT:
-        cursor = JSVAL_TO_PRIVATE(*statep);
+        cursor = (JSXMLArrayCursor *) JSVAL_TO_PRIVATE(*statep);
         if (cursor && cursor->array && (index = cursor->index) < length) {
             *idp = INT_TO_JSID(index);
             cursor->index = index + 1;
@@ -5304,7 +5304,7 @@ xml_enumerate(JSContext *cx, JSObject *obj, JSIterateOp enum_op,
         /* FALL THROUGH */
 
       case JSENUMERATE_DESTROY:
-        cursor = JSVAL_TO_PRIVATE(*statep);
+        cursor = (JSXMLArrayCursor *) JSVAL_TO_PRIVATE(*statep);
         if (cursor) {
             XMLArrayCursorFinish(cursor);
             JS_free(cx, cursor);
@@ -5431,7 +5431,7 @@ xml_enumerateValues(JSContext *cx, JSObject *obj, JSIterateOp enum_op,
         break;
 
       case JSENUMERATE_NEXT:
-        cursor = JSVAL_TO_PRIVATE(*statep);
+        cursor = (JSXMLArrayCursor *) JSVAL_TO_PRIVATE(*statep);
         if (cursor && cursor->array && (index = cursor->index) < length) {
             while (!(kid = XMLARRAY_MEMBER(&xml->xml_kids, index, JSXML))) {
                 if (++index == length)
@@ -5449,7 +5449,7 @@ xml_enumerateValues(JSContext *cx, JSObject *obj, JSIterateOp enum_op,
         /* FALL THROUGH */
 
       case JSENUMERATE_DESTROY:
-        cursor = JSVAL_TO_PRIVATE(*statep);
+        cursor = (JSXMLArrayCursor *) JSVAL_TO_PRIVATE(*statep);
         if (cursor) {
       destroy:
             XMLArrayCursorFinish(cursor);
@@ -7467,7 +7467,7 @@ XMLList(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
 }
 
 #define JSXML_LIST_SIZE     (offsetof(JSXML, u) + sizeof(struct JSXMLListVar))
-#define JSXML_ELEMENT_SIZE  (offsetof(JSXML, u) + sizeof(struct JSXMLVar))
+#define JSXML_ELEMENT_SIZE  (offsetof(JSXML, u) + sizeof(struct JSXMLElemVar))
 #define JSXML_LEAF_SIZE     (offsetof(JSXML, u) + sizeof(JSString *))
 
 static size_t sizeof_JSXML[JSXML_CLASS_LIMIT] = {
