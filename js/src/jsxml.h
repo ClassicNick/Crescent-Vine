@@ -152,6 +152,18 @@ typedef enum JSXMLClass {
 #include "jsclist.h"
 #endif
 
+typedef struct JSXMLListVar {
+    JSXMLArray          kids;           /* NB: must come first */
+    JSXML               *target;
+    JSXMLQName          *targetprop;
+} JSXMLListVar;
+
+typedef struct JSXMLElemVar {
+    JSXMLArray          kids;           /* NB: must come first */
+    JSXMLArray          namespaces;
+    JSXMLArray          attrs;
+} JSXMLElemVar;
+
 struct JSXML {
 #ifdef DEBUG_notme
     JSCList             links;
@@ -164,16 +176,8 @@ struct JSXML {
     uint16              xml_class;      /* discriminates u, below */
     uint16              xml_flags;      /* flags, see below */
     union {
-        struct JSXMLListVar {
-            JSXMLArray  kids;           /* NB: must come first */
-            JSXML       *target;
-            JSXMLQName  *targetprop;
-        } list;
-        struct JSXMLVar {
-            JSXMLArray  kids;           /* NB: must come first */
-            JSXMLArray  namespaces;
-            JSXMLArray  attrs;
-        } elem;
+        JSXMLListVar    list;
+        JSXMLElemVar    elem;
         JSString        *value;
     } u;
 
