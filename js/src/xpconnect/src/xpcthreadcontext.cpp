@@ -42,13 +42,11 @@
 /* Implement global service to track stack of JSContext per thread. */
 
 #include "xpcprivate.h"
-#include "nsIScriptGlobalObject.h"
-#include "nsIScriptContext.h"
 
 /***************************************************************************/
 
 XPCJSContextStack::XPCJSContextStack()
-    : mStack(),
+    : mStack(nsnull),
       mSafeJSContext(nsnull),
       mOwnSafeJSContext(nsnull)
 {
@@ -78,7 +76,7 @@ XPCJSContextStack::SyncJSContexts()
 NS_IMETHODIMP
 XPCJSContextStack::GetCount(PRInt32 *aCount)
 {
-    *aCount = mStack.Length();
+    *aCount = mStack.GetSize();
     return NS_OK;
 }
 
@@ -86,7 +84,7 @@ XPCJSContextStack::GetCount(PRInt32 *aCount)
 NS_IMETHODIMP
 XPCJSContextStack::Peek(JSContext * *_retval)
 {
-    *_retval = mStack.IsEmpty() ? nsnull : mStack[mStack.Length() - 1].cx;
+    *_retval = (JSContext*) mStack.Peek();
     return NS_OK;
 }
 
@@ -94,82 +92,20 @@ XPCJSContextStack::Peek(JSContext * *_retval)
 NS_IMETHODIMP
 XPCJSContextStack::Pop(JSContext * *_retval)
 {
-    NS_ASSERTION(!mStack.IsEmpty(), "ThreadJSContextStack underflow");
-
-    PRUint32 idx = mStack.Length() - 1; // The thing we're popping
-    NS_ASSERTION(!mStack[idx].frame,
-                 "Shouldn't have a pending frame to restore on the context "
-                 "we're popping!");
+    NS_ASSERTION(mStack.GetSize() > 0, "ThreadJSContextStack underflow");
 
     if(_retval)
-        *_retval = mStack[idx].cx;
-
-    mStack.RemoveElementAt(idx);
-    if(idx > 0)
-    {
-        --idx; // Advance to new top of the stack
-        JSContextAndFrame & e = mStack[idx];
-        NS_ASSERTION(!e.frame || e.cx, "Shouldn't have frame without a cx!");
-        if(e.cx && e.frame)
-        {
-            JS_RestoreFrameChain(e.cx, e.frame);
-            e.frame = nsnull;
-        }
-    }
+        *_retval = (JSContext*) mStack.Pop();
+    else
+        mStack.Pop();
     return NS_OK;
-}
-
-static nsIPrincipal*
-GetPrincipalFromCx(JSContext *cx)
-{
-    nsIScriptContext* scriptContext = GetScriptContextFromJSContext(cx);
-    if (scriptContext)
-    {
-        nsCOMPtr<nsIScriptObjectPrincipal> globalData =
-            do_QueryInterface(scriptContext->GetGlobalObject());
-        if (globalData)
-            return globalData->GetPrincipal();
-    }
-    return nsnull;
 }
 
 /* void push (in JSContext cx); */
 NS_IMETHODIMP
 XPCJSContextStack::Push(JSContext * cx)
 {
-    if(!mStack.AppendElement(cx))
-        return NS_ERROR_OUT_OF_MEMORY;
-    if(mStack.Length() > 1)
-    {
-        JSContextAndFrame & e = mStack[mStack.Length() - 2];
-        if(e.cx)
-        {
-           if (e.cx == cx)
-           {   nsresult rv;
-               nsCOMPtr<nsIScriptSecurityManager> ssm =
-                  do_GetService(NS_SCRIPTSECURITYMANAGER_CONTRACTID, &rv);
-               if (NS_SUCCEEDED(rv) && ssm)
-               {
-                   nsIPrincipal* globalObjectPrincipal =
-                       GetPrincipalFromCx(cx);
-                   if (globalObjectPrincipal)
-                   {
-                       nsCOMPtr<nsIPrincipal> subjectPrincipal;
-                       ssm->GetSubjectPrincipal(getter_AddRefs(subjectPrincipal));
-   
-                       PRBool equals = PR_FALSE;
-                       globalObjectPrincipal->Equals(subjectPrincipal, &equals);
-                       if (equals)
-                       {
-                           return NS_OK; 
-                       }
-                   }
-               }
-           }
-
-           e.frame = JS_SaveFrameChain(e.cx);
-        }
-    }
+    mStack.Push(cx);
     return NS_OK;
 }
 
@@ -177,8 +113,8 @@ XPCJSContextStack::Push(JSContext * cx)
 JSBool 
 XPCJSContextStack::DEBUG_StackHasJSContext(JSContext*  aJSContext)
 {
-    for(PRUint32 i = 0; i < mStack.Length(); i++)
-        if(aJSContext == mStack[i].cx)
+    for(PRInt32 i = 0; i < mStack.GetSize(); i++)
+        if(aJSContext == (JSContext*)mStack.ObjectAt(i))
             return JS_TRUE;
     return JS_FALSE;
 }
@@ -654,11 +590,17 @@ nsXPCJSContextStackIterator::Reset(nsIJSContextStack *aStack)
     XPCJSContextStack *stack = impl->GetStackForCurrentThread();
     if(!stack)
         return NS_ERROR_FAILURE;
-    mStack = stack->GetStack();
-    if(mStack->IsEmpty())
-        mStack = nsnull;
-    else
-        mPosition = mStack->Length() - 1;
+    const nsDeque &deque = stack->GetStack();
+
+    if(deque.GetSize() == 0)
+    {
+        mIterator = nsnull;
+        return NS_OK;
+    }
+
+    mIterator = new nsDequeIterator(deque.End());
+    if(!mIterator)
+        return NS_ERROR_OUT_OF_MEMORY;
 
     return NS_OK;
 }
@@ -666,23 +608,25 @@ nsXPCJSContextStackIterator::Reset(nsIJSContextStack *aStack)
 NS_IMETHODIMP
 nsXPCJSContextStackIterator::Done(PRBool *aDone)
 {
-    *aDone = !mStack;
+    *aDone = !mIterator;
     return NS_OK;
 }
 
 NS_IMETHODIMP
 nsXPCJSContextStackIterator::Prev(JSContext **aContext)
 {
-    if(!mStack)
+    if(!mIterator)
         return NS_ERROR_NOT_INITIALIZED;
 
-    *aContext = mStack->ElementAt(mPosition).cx;
+    *aContext = (JSContext*)(mIterator->GetCurrent());
 
-    if(mPosition == 0)
-        mStack = nsnull;
+    // XXX This temporary shouldn't be necessary.
+    nsDequeIterator first(*mIterator);
+    if(*mIterator == first.First())
+        mIterator = nsnull;
     else
-        --mPosition;
-    
+        --*mIterator;
+
     return NS_OK;
 }
 
