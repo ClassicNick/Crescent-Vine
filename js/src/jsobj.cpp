@@ -1797,6 +1797,131 @@ obj_lookupSetter(JSContext *cx, JSObject *obj, uintN argc, jsval *argv,
 }
 #endif /* JS_HAS_GETTER_SETTER */
 
+static JSBool
+HasProperty(JSContext *cx, JSObject *obj, const char *name, jsval *vp,
+            JSBool *answerp)
+{
+    if (!JS_HasProperty(cx, obj, name, answerp))
+        return JS_FALSE;
+    if (!*answerp) {
+        *vp = JSVAL_VOID;
+        return JS_TRUE;
+    }
+    return JS_GetProperty(cx, obj, name, vp);
+}
+
+static JSBool
+obj_defineProperty(JSContext *cx, uintN argc, jsval *vp)
+{
+    JSObject *obj, *desc, *getter, *setter;
+    jsid id;
+    uintN attrs;
+    jsval v;
+    JSBool hasFlexible, hasValue, hasWritable, hasGetter, hasSetter;
+    JSTempValueRooter tvr;
+
+    obj = js_ValueToNonNullObject(cx, vp[2]);
+    if (!obj || !JS_ValueToId(cx, vp[3], &id))
+        return JS_FALSE;
+    *vp = OBJECT_TO_JSVAL(obj);
+
+    desc = js_ValueToNonNullObject(cx, vp[4]);
+    if (!desc)
+        return JS_FALSE;
+    vp[4] = OBJECT_TO_JSVAL(desc);
+
+    attrs = 0;
+    if (!JS_GetProperty(cx, desc, "enumerable", &v))
+        return JS_FALSE;
+    if (js_ValueToBoolean(NULL, v, NULL))
+        attrs |= JSPROP_ENUMERATE;
+
+    if (!HasProperty(cx, desc, "flexible", &v, &hasFlexible))
+        return JS_FALSE;
+    if (hasFlexible && !js_ValueToBoolean(NULL, v, NULL)) {
+         /*
+          * TODO: This is only half of flexible: we need to seal the value if
+          * [[Flexible]] is true.
+          */
+        attrs |= JSPROP_PERMANENT;
+    }
+
+    if (!HasProperty(cx, desc, "value", &v, &hasValue))
+        return JS_FALSE;
+
+    /* Protect any value from GC hiding under the get of 'writable'. */
+    JS_PUSH_SINGLE_TEMP_ROOT(cx, v, &tvr);
+
+    if (!HasProperty(cx, desc, "writable", &v, &hasWritable))
+        goto error;
+    if (hasWritable && !js_ValueToBoolean(NULL, v, NULL))
+        attrs |= JSPROP_READONLY;
+
+    if (!JS_HasProperty(cx, desc, "getter", &hasGetter) ||
+        !JS_HasProperty(cx, desc, "setter", &hasSetter)) {
+        goto error;
+    }
+
+    if ((hasValue || hasWritable) && (hasGetter || hasSetter)) {
+        JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL,
+                             JSMSG_INVALID_DESCRIPTOR);
+        goto error;
+    }
+
+    if (hasGetter) {
+        if (!JS_GetProperty(cx, desc, "getter", &v))
+            goto error;
+
+        attrs |= JSPROP_GETTER;
+        if (JS_TypeOfValue(cx, v) != JSTYPE_FUNCTION) {
+            JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL,
+                                 JSMSG_BAD_GETTER_OR_SETTER,
+                                 js_getter_str);
+            return JS_FALSE;
+        }
+
+        /* There must be no value, so protect the getter from GC. */
+        tvr.u.value = v;
+        getter = JSVAL_TO_OBJECT(v);
+    } else {
+        getter = NULL;
+    }
+
+    if (hasSetter) {
+        if (!JS_GetProperty(cx, desc, "setter", &v))
+            goto error;
+        attrs |= JSPROP_SETTER;
+
+        if (JS_TypeOfValue(cx, v) != JSTYPE_FUNCTION) {
+            JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL,
+                                 JSMSG_BAD_GETTER_OR_SETTER,
+                                 js_setter_str);
+            return JS_FALSE;
+        }
+
+        setter = JSVAL_TO_OBJECT(v);
+    } else {
+        setter = NULL;
+    }
+
+    /* Set up v for the call to [[DefineOwnProperty]]. */
+    v = hasValue ? tvr.u.value : JSVAL_VOID;
+
+    if (!js_CheckRedeclaration(cx, obj, id, attrs, NULL, NULL) ||
+        !OBJ_DEFINE_PROPERTY(cx, obj, id, v,
+                             (JSPropertyOp) getter, (JSPropertyOp) setter,
+                             attrs, NULL)) {
+        goto error;
+    }
+
+    JS_POP_TEMP_ROOT(cx, &tvr);
+    return JS_TRUE;
+
+error:
+    JS_POP_TEMP_ROOT(cx, &tvr);
+    return JS_FALSE;
+}
+
 #if JS_HAS_OBJ_WATCHPOINT
 const char js_watch_str[] = "watch";
 const char js_unwatch_str[] = "unwatch";
@@ -1810,6 +1935,7 @@ const char js_defineSetter_str[] = "__defineSetter__";
 const char js_lookupGetter_str[] = "__lookupGetter__";
 const char js_lookupSetter_str[] = "__lookupSetter__";
 #endif
+const char js_defineProperty_str[] = "defineProperty";
 
 static JSFunctionSpec object_methods[] = {
 #if JS_HAS_TOSOURCE
@@ -1832,6 +1958,13 @@ static JSFunctionSpec object_methods[] = {
     {js_lookupSetter_str,         obj_lookupSetter,   1,0,0},
 #endif
     {0,0,0,0,0}
+};
+
+static JSFunctionSpec object_static_methods[] = {
+	
+	{js_defineProperty_str,		  NULL,				3,3,0},
+	
+	{0,0,0,0,0}
 };
 
 static JSBool
@@ -2273,7 +2406,7 @@ js_InitObjectClass(JSContext *cx, JSObject *obj)
     JSObject *proto;
 
     proto = JS_InitClass(cx, obj, NULL, &js_ObjectClass, Object, 1,
-                         object_props, object_methods, NULL, NULL);
+                         object_props, object_methods, NULL, object_static_methods);
     if (!proto)
         return NULL;
 
