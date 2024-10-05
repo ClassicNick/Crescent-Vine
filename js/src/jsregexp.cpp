@@ -1639,7 +1639,7 @@ EmitREBytecode(CompilerState *state, JSRegExp *re, size_t treeDepth,
             emitStateSP->continueOp = REOP_ENDALT;
             ++emitStateSP;
             JS_ASSERT((size_t)(emitStateSP - emitStateStack) <= treeDepth);
-            t = t->u.kid2;
+            t = (RENode *) t->u.kid2;
             op = t->op;
             continue;
 
@@ -1742,7 +1742,7 @@ EmitREBytecode(CompilerState *state, JSRegExp *re, size_t treeDepth,
             emitStateSP->jumpToJumpFlag = JS_FALSE;
             ++emitStateSP;
             JS_ASSERT((size_t)(emitStateSP - emitStateStack) <= treeDepth);
-            t = t->kid;
+            t = (RENode *) t->kid;
             op = t->op;
             continue;
 
@@ -1891,7 +1891,7 @@ EmitREBytecode(CompilerState *state, JSRegExp *re, size_t treeDepth,
                 break;
             --emitStateSP;
             t = emitStateSP->continueNode;
-            op = emitStateSP->continueOp;
+            op = (REOp) emitStateSP->continueOp;
         }
     }
 
@@ -2984,7 +2984,7 @@ ExecuteREBytecode(REGlobalData *gData, REMatchState *x)
 
             case REOP_ENDCHILD: /* marks the end of a quantifier child */
                 pc = curState[-1].continue_pc;
-                op = curState[-1].continue_op;
+                op = (REOp) curState[-1].continue_op;
                 continue;
 
             case REOP_REPEAT:
@@ -3168,7 +3168,7 @@ ExecuteREBytecode(REGlobalData *gData, REMatchState *x)
                 (REBackTrackData *) ((char *)backTrackData - backTrackData->sz);
             x->cp = backTrackData->cp;
             pc = backTrackData->backtrack_pc;
-            op = backTrackData->backtrack_op;
+            op = (REOp) backTrackData->backtrack_op;
             gData->stateStackTop = backTrackData->saveStateStackTop;
 
             JS_ASSERT(gData->stateStackTop);
@@ -4210,7 +4210,7 @@ js_CloneRegExpObject(JSContext *cx, JSObject *obj, JSObject *parent)
     clone = js_NewObject(cx, &js_RegExpClass, NULL, parent);
     if (!clone)
         return NULL;
-    re = JS_GetPrivate(cx, obj);
+    re = (JSRegExp *) JS_GetPrivate(cx, obj);
     if (!JS_SetPrivate(cx, clone, re) || !js_SetLastIndex(cx, clone, 0)) {
         cx->weakRoots.newborn[GCX_OBJECT] = NULL;
         return NULL;

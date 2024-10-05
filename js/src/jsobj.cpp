@@ -68,6 +68,9 @@
 #include "jsscript.h"
 #include "jsstr.h"
 #include "jsopcode.h"
+#include "jsexn.h"
+#include "jsmath.h"
+#include "jsdate.h"
 
 #include "jsdbgapi.h"   /* whether or not JS_HAS_OBJ_WATCHPOINT */
 
@@ -222,7 +225,7 @@ obj_setSlot(JSContext *cx, JSObject *obj, jsval id, jsval *vp)
 
     /* __parent__ is readonly and permanent, only __proto__ may be set. */
     propid = ATOM_TO_JSID(cx->runtime->atomState.protoAtom);
-    if (!OBJ_CHECK_ACCESS(cx, obj, propid, JSACC_PROTO|JSACC_WRITE, vp, &attrs))
+    if (!OBJ_CHECK_ACCESS(cx, obj, propid, (JSAccessMode)(JSACC_PROTO|JSACC_WRITE), vp, &attrs))
         return JS_FALSE;
 
     return js_SetProtoOrParent(cx, obj, slot, pobj);
@@ -2644,7 +2647,7 @@ js_FindClassObject(JSContext *cx, JSObject *start, jsid id, jsval *vp)
         return JS_FALSE;
 
     if (JSID_IS_INT(id)) {
-        key = JSID_TO_INT(id);
+        key = (JSProtoKey) JSID_TO_INT(id);
         JS_ASSERT(key != JSProto_Null);
         if (!js_GetClassObject(cx, obj, key, &cobj))
             return JS_FALSE;
@@ -3607,7 +3610,7 @@ js_GetProperty(JSContext *cx, JSObject *obj, jsid id, jsval *vp)
             uintN flags;
             JSString *str;
 
-            op = *pc;
+            op = (JSOp) *pc;
             if (op == JSOP_GETXPROP || op == JSOP_GETXELEM) {
                 flags = JSREPORT_ERROR;
             } else {
@@ -4536,7 +4539,7 @@ js_GetClassPrototype(JSContext *cx, JSObject *scope, jsid id,
              * instance that delegates to this object, or just query the
              * prototype for its class.
              */
-            cx->weakRoots.newborn[GCX_OBJECT] = JSVAL_TO_GCTHING(v);
+            cx->weakRoots.newborn[GCX_OBJECT] = (JSGCThing*) JSVAL_TO_GCTHING(v);
         }
     }
     *protop = JSVAL_IS_OBJECT(v) ? JSVAL_TO_OBJECT(v) : NULL;
@@ -4770,7 +4773,7 @@ js_XDRObject(JSXDRState *xdr, JSObject **objp)
     if (xdr->mode == JSXDR_DECODE) {
         if (classDef) {
             /* NB: we know that JSProto_Null is 0 here, for backward compat. */
-            protoKey = classDef >> 1;
+            protoKey = (JSProtoKey) (classDef >> 1);
             classKey = (protoKey != JSProto_Null)
                        ? INT_TO_JSID(protoKey)
                        : ATOM_TO_JSID(atom);
@@ -5009,7 +5012,7 @@ js_SetRequiredSlot(JSContext *cx, JSObject *obj, uint32 slot, jsval v)
 JS_FRIEND_API(void)
 js_SetObjectWeakRoot(JSContext *cx, JSObject *obj)
 {
-    cx->weakRoots.newborn[GCX_OBJECT] = obj;
+    cx->weakRoots.newborn[GCX_OBJECT] = (JSGCThing *) obj;
 }
 
 #ifdef DEBUG

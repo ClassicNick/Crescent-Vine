@@ -1011,7 +1011,7 @@ js_InitScriptClass(JSContext *cx, JSObject *obj)
 JS_STATIC_DLL_CALLBACK(int)
 js_compare_strings(const void *k1, const void *k2)
 {
-    return strcmp(k1, k2) == 0;
+    return strcmp((const char *) k1, (const char *) k2) == 0;
 }
 
 /* Shared with jsatom.c to save code space. */
@@ -1034,7 +1034,7 @@ typedef struct ScriptFilenameEntry {
 JS_STATIC_DLL_CALLBACK(JSHashEntry *)
 js_alloc_sftbl_entry(void *priv, const void *key)
 {
-    size_t nbytes = offsetof(ScriptFilenameEntry, filename) + strlen(key) + 1;
+    size_t nbytes = offsetof(ScriptFilenameEntry, filename) + strlen((const char *) key) + 1;
 
     return (JSHashEntry *) malloc(JS_MAX(nbytes, sizeof(JSHashEntry)));
 }
@@ -1698,7 +1698,7 @@ js_FindFinallyHandler(JSScript *script, jsbytecode *pc)
              */
             pc = script->main + tn->catchStart;
             JS_ASSERT(*pc == JSOP_SETSP);
-            op2 = pc[JSOP_SETSP_LENGTH];
+            op2 = (JSOp) pc[JSOP_SETSP_LENGTH];
             if (op2 != JSOP_ENTERBLOCK) {
                 JS_ASSERT(op2 == JSOP_GOSUB || op2 == JSOP_EXCEPTION);
                 return pc;

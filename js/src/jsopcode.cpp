@@ -1130,7 +1130,7 @@ GetLocal(SprintStack *ss, jsint i)
 #if JS_HAS_DESTRUCTURING
 
 #define LOCAL_ASSERT(expr)  LOCAL_ASSERT_RV(expr, NULL)
-#define LOAD_OP_DATA(pc)    (oplen = (cs = &js_CodeSpec[op = *pc])->length)
+#define LOAD_OP_DATA(pc)    (oplen = (cs = &js_CodeSpec[op=(JSOp)*pc])->length)
 
 static jsbytecode *
 DecompileDestructuring(SprintStack *ss, jsbytecode *pc, jsbytecode *endpc);
@@ -1319,7 +1319,7 @@ DecompileDestructuring(SprintStack *ss, jsbytecode *pc, jsbytecode *endpc)
           case JSOP_LITOPX:
             atomIndex = GET_LITERAL_INDEX(pc);
             pc2 = pc + 1 + LITERAL_INDEX_LEN;
-            op = *pc2;
+            op = (JSOp) *pc2;
             LOCAL_ASSERT(op == JSOP_NUMBER);
             goto do_getatom;
 
@@ -1528,7 +1528,7 @@ Decompile(SprintStack *ss, jsbytecode *pc, intN nb)
  */
 #define DECOMPILE_CODE(pc,nb)   if (!Decompile(ss, pc, nb)) return NULL
 #define POP_STR()               PopStr(ss, op)
-#define LOCAL_ASSERT(expr)      LOCAL_ASSERT_RV(expr, JS_FALSE)
+#define LOCAL_ASSERT(expr)      LOCAL_ASSERT_RV(expr, NULL)
 
 /*
  * Callers know that ATOM_IS_STRING(atom), and we leave it to the optimizer to
@@ -1649,9 +1649,9 @@ Decompile(SprintStack *ss, jsbytecode *pc, intN nb)
                      * operand.
                      */
                     if (mode == JOF_PROP) {
-                        op = (format & JOF_SET) ? JSOP_GETPROP2 : JSOP_GETPROP;
+                        op = (JSOp) ((format & JOF_SET) ? JSOP_GETPROP2 : JSOP_GETPROP);
                     } else if (mode == JOF_ELEM) {
-                        op = (format & JOF_SET) ? JSOP_GETELEM2 : JSOP_GETELEM;
+                        op = (JSOp) ((format & JOF_SET) ? JSOP_GETELEM2 : JSOP_GETELEM);
                     } else {
                         /*
                          * Zero mode means precisely that op is uncategorized
@@ -1702,7 +1702,7 @@ Decompile(SprintStack *ss, jsbytecode *pc, intN nb)
                      * expansion: x = x op y (replace y by z = w to see the
                      * problem).
                      */
-                    op = pc[oplen];
+                    op = (JSOp) pc[oplen];
                     LOCAL_ASSERT(op != saveop);
                 }
                 rval = POP_STR();
@@ -2487,7 +2487,7 @@ Decompile(SprintStack *ss, jsbytecode *pc, intN nb)
 
                 rval = POP_STR();
                 pos = ss->top;
-                while ((op = ss->opcodes[--pos]) != JSOP_ENTERBLOCK &&
+                while ((op = (JSOp) ss->opcodes[--pos]) != JSOP_ENTERBLOCK &&
                        op != JSOP_NEWINIT) {
                     LOCAL_ASSERT(pos != 0);
                 }
@@ -2895,7 +2895,7 @@ Decompile(SprintStack *ss, jsbytecode *pc, intN nb)
               case JSOP_DUP2:
                 rval = GetStr(ss, ss->top-2);
                 todo = SprintCString(&ss->sprinter, rval);
-                if (todo < 0 || !PushOff(ss, todo, ss->opcodes[ss->top-2]))
+                if (todo < 0 || !PushOff(ss, todo, (JSOp) ss->opcodes[ss->top-2]))
                     return NULL;
                 /* FALL THROUGH */
 
@@ -2939,7 +2939,7 @@ Decompile(SprintStack *ss, jsbytecode *pc, intN nb)
 #endif
 
                 rval = GetStr(ss, ss->top-1);
-                saveop = ss->opcodes[ss->top-1];
+                saveop = (JSOp) ss->opcodes[ss->top-1];
                 todo = SprintCString(&ss->sprinter, rval);
                 break;
 
@@ -3415,7 +3415,7 @@ Decompile(SprintStack *ss, jsbytecode *pc, intN nb)
               case JSOP_LITOPX:
                 atomIndex = GET_LITERAL_INDEX(pc);
                 pc2 = pc + 1 + LITERAL_INDEX_LEN;
-                op = saveop = *pc2;
+                op = saveop = (JSOp) *pc2;
                 pc += len - (1 + ATOM_INDEX_LEN);
                 cs = &js_CodeSpec[op];
                 len = cs->length;
@@ -4584,7 +4584,7 @@ js_DecompileValueGenerator(JSContext *cx, intN spindex, jsval v,
         sn = js_GetSrcNote(script, pc);
         if (!sn)
             goto do_fallback;
-        noteType = SN_TYPE(sn);
+        noteType = (JSSrcNoteType) SN_TYPE(sn);
         if (noteType == SRC_PCBASE) {
             begin -= js_GetSrcNoteOffset(sn, 0);
         } else if (noteType == SRC_PCDELTA) {
@@ -4636,7 +4636,7 @@ js_DecompileValueGenerator(JSContext *cx, intN spindex, jsval v,
             jmpoff = js_GetSrcNoteOffset(sn, 0);
             if (pc + jmpoff < begin) {
                 pc += jmpoff;
-                op = *pc;
+                op = (JSOp) *pc;
                 JS_ASSERT(op == JSOP_GOTO || op == JSOP_GOTOX);
                 cs = &js_CodeSpec[op];
                 oplen = cs->length;
@@ -4699,7 +4699,7 @@ js_DecompileValueGenerator(JSContext *cx, intN spindex, jsval v,
 
           case JOF_LITOPX:
             pc2 = pc + 1 + LITERAL_INDEX_LEN;
-            op = *pc2;
+            op = (JSOp) *pc2;
             cs = &js_CodeSpec[op];
             JS_ASSERT(cs->length > ATOM_INDEX_LEN);
             oplen += cs->length - (1 + ATOM_INDEX_LEN);

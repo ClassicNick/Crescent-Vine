@@ -63,6 +63,7 @@
 #include "jsopcode.h"
 #include "jsscope.h"
 #include "jsscript.h"
+#include "jsscan.h"
 
 #if JS_HAS_XML_SUPPORT
 #include "jsxml.h"

@@ -552,7 +552,7 @@ args_or_call_mark(JSContext *cx, JSObject *obj, void *arg)
 {
     JSStackFrame *fp;
 
-    fp = JS_GetPrivate(cx, obj);
+    fp = (JSStackFrame*) JS_GetPrivate(cx, obj);
     if (fp && (fp->flags & JSFRAME_GENERATOR))
         GC_MARK(cx, FRAME_TO_GENERATOR(fp)->obj, "FRAME_TO_GENERATOR(fp)->obj");
     return 0;
@@ -813,7 +813,7 @@ call_enumerate(JSContext *cx, JSObject *obj)
         JS_ASSERT(JSID_IS_ATOM(sprop->id));
         atom = JSID_TO_ATOM(sprop->id);
         JS_ASSERT(atom->flags & ATOM_HIDDEN);
-        atom = atom->entry.value;
+        atom = (JSAtom*) atom->entry.value;
 
         if (!js_LookupProperty(cx, obj, ATOM_TO_JSID(atom), &pobj, &prop))
             return JS_FALSE;
@@ -1137,7 +1137,7 @@ fun_resolve(JSContext *cx, JSObject *obj, jsval id, uintN flags,
                  * root until then to protect pval in case it is figuratively
                  * up in the air, with no strong refs protecting it.
                  */
-                cx->weakRoots.newborn[GCX_OBJECT] = JSVAL_TO_GCTHING(pval);
+                cx->weakRoots.newborn[GCX_OBJECT] = (JSGCThing*) JSVAL_TO_GCTHING(pval);
                 parentProto = JSVAL_TO_OBJECT(pval);
             }
         }

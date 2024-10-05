@@ -370,7 +370,7 @@ js_AllocStack(JSContext *cx, uintN nslots, void **markp)
     /* Callers don't check for zero nslots: we do to avoid empty segments. */
     if (nslots == 0) {
         *markp = NULL;
-        return JS_ARENA_MARK(&cx->stackPool);
+        return (jsval *) JS_ARENA_MARK(&cx->stackPool);
     }
 
     /* Allocate 2 extra slots for the stack segment header we'll likely need. */
@@ -2154,8 +2154,8 @@ js_Interpret(JSContext *cx, jsbytecode *pc, jsval *result)
      * the most part -- web browsers select version before compiling and not
      * at run-time.
      */
-    currentVersion = script->version;
-    originalVersion = cx->version;
+    currentVersion = (JSVersion) script->version;
+    originalVersion = (JSVersion) cx->version;
     if (currentVersion != originalVersion)
         js_SetVersion(cx, currentVersion);
 
@@ -3930,9 +3930,9 @@ interrupt:
                 }
 
                 /* Switch to new version if currentVersion wasn't overridden. */
-                newifp->callerVersion = cx->version;
+                newifp->callerVersion = (JSVersion) cx->version;
                 if (JS_LIKELY(cx->version == currentVersion)) {
-                    currentVersion = script->version;
+                    currentVersion = (JSVersion) script->version;
                     if (currentVersion != cx->version)
                         js_SetVersion(cx, currentVersion);
                 }
@@ -3948,7 +3948,7 @@ interrupt:
                 JS_RUNTIME_METER(rt, inlineCalls);
 
                 /* Load first opcode and dispatch it (safe since JSOP_STOP). */
-                op = *pc;
+                op = (JSOp) *pc;
                 DO_OP();
 
               bad_inline_call:
@@ -4103,7 +4103,7 @@ interrupt:
              */
             atomIndex = GET_LITERAL_INDEX(pc);
             pc2 = pc + 1 + LITERAL_INDEX_LEN;
-            op = *pc2;
+            op = (JSOp) *pc2;
             pc += JSOP_LITOPX_LENGTH - (1 + ATOM_INDEX_LEN);
 #ifndef JS_THREADED_INTERP
             len = js_CodeSpec[op].length;
@@ -5216,7 +5216,7 @@ interrupt:
             JS_ASSERT(sp - fp->spbase >= 1);
             lval = FETCH_OPND(-1);
             JS_ASSERT(JSVAL_IS_OBJECT(lval));
-            cx->weakRoots.newborn[GCX_OBJECT] = JSVAL_TO_GCTHING(lval);
+            cx->weakRoots.newborn[GCX_OBJECT] = (JSGCThing*) JSVAL_TO_GCTHING(lval);
           END_CASE(JSOP_ENDINIT)
 
           BEGIN_CASE(JSOP_INITPROP)
